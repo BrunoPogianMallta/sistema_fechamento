@@ -1,4 +1,5 @@
 "use client"
+
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,19 +25,19 @@ export default function RestaurantDashboard() {
       return
     }
 
-    // Carregar entregadores
-    const saved = localStorage.getItem("deliverers")
-    if (saved) {
-      setDeliverers(JSON.parse(saved))
-    } else {
-      const defaultDeliverers = [
-        { id: "1", name: "João Silva", phone: "(11) 99999-1111", password: "123" },
-        { id: "2", name: "Maria Santos", phone: "(11) 99999-2222", password: "123" },
-        { id: "3", name: "Pedro Oliveira", phone: "(11) 99999-3333", password: "123" },
-      ]
-      setDeliverers(defaultDeliverers)
-      localStorage.setItem("deliverers", JSON.stringify(defaultDeliverers))
+    async function fetchDeliverers() {
+      try {
+        const res = await fetch("/api/entregadores")
+        if (!res.ok) throw new Error("Erro ao carregar entregadores")
+        const data: Deliverer[] = await res.json()
+        setDeliverers(data)
+      } catch (error) {
+        console.error(error)
+        // Aqui você pode adicionar tratamento visual de erro, se quiser
+      }
     }
+
+    fetchDeliverers()
   }, [router])
 
   const handleLogout = () => {

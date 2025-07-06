@@ -1,7 +1,5 @@
 "use client"
 
-import type React from "react"
-
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useToast } from "@/hooks/use-toast"
 import { User, Plus, Trash2, Edit } from "lucide-react"
+import { supabase } from "@/lib/supabaseClient"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface Deliverer {
   id: string
@@ -22,34 +22,37 @@ export function DelivererManager() {
   const [deliverers, setDeliverers] = useState<Deliverer[]>([])
   const [formData, setFormData] = useState({ name: "", phone: "", password: "" })
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
   const { toast } = useToast()
 
   useEffect(() => {
     loadDeliverers()
   }, [])
 
-  const loadDeliverers = () => {
-    const saved = localStorage.getItem("deliverers")
-    if (saved) {
-      setDeliverers(JSON.parse(saved))
-    } else {
-      // Entregadores padrão
-      const defaultDeliverers = [
-        { id: "1", name: "João Silva", phone: "(11) 99999-1111", password: "password1" },
-        { id: "2", name: "Maria Santos", phone: "(11) 99999-2222", password: "password2" },
-        { id: "3", name: "Pedro Oliveira", phone: "(11) 99999-3333", password: "password3" },
-      ]
-      setDeliverers(defaultDeliverers)
-      localStorage.setItem("deliverers", JSON.stringify(defaultDeliverers))
+  const loadDeliverers = async () => {
+    setIsLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('deliverers')
+        .select('id, name, phone')
+        .order('name', { ascending: true })
+
+      if (error) throw error
+
+      setDeliverers(data || [])
+    } catch (error) {
+      toast({
+        title: "Erro",
+        description: "Falha ao carregar entregadores",
+        variant: "destructive",
+      })
+      console.error(error)
+    } finally {
+      setIsLoading(false)
     }
   }
 
-  const saveDeliverers = (updatedDeliverers: Deliverer[]) => {
-    setDeliverers(updatedDeliverers)
-    localStorage.setItem("deliverers", JSON.stringify(updatedDeliverers))
-  }
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
     if (!formData.name) {
@@ -61,33 +64,64 @@ export function DelivererManager() {
       return
     }
 
-    if (editingId) {
-      // Editar entregador existente
-      const updated = deliverers.map((d) =>
-        d.id === editingId ? { ...d, name: formData.name, phone: formData.phone, password: formData.password } : d,
-      )
-      saveDeliverers(updated)
-      setEditingId(null)
-      toast({
-        title: "Sucesso",
-        description: "Entregador atualizado com sucesso!",
-      })
-    } else {
-      // Adicionar novo entregador
-      const newDeliverer: Deliverer = {
-        id: Date.now().toString(),
-        name: formData.name,
-        phone: formData.phone,
-        password: formData.password || "123", // Senha padrão se não informada
-      }
-      saveDeliverers([...deliverers, newDeliverer])
-      toast({
-        title: "Sucesso",
-        description: "Entregador adicionado com sucesso!",
-      })
-    }
+    try {
+      if (editingId) {
+        // Atualizar entregador existente
+        const { error } = await supabase
+          .from('deliverers')
+          .update({
+            name: formData.name,
+            phone: formData.phone,
+            password: formData.password || "123"
+          })
+          .eq('id', editingId)
 
-    setFormData({ name: "", phone: "", password: "" })
+        if (error) throw error
+
+        toast({
+          title: "Sucesso",
+          description: "Entregador atualizado com sucesso!",
+        })
+      } else {
+        // Criar novo entregador
+        const { data, error } = await supabase
+          .from('deliverers')
+          .insert([{
+            name: formData.name,
+            phone: formData.phone,
+            password: formData.password || "123"
+          }])
+          .select()
+
+        if (error) throw error
+
+        // Criar usuário associado
+        await supabase
+          .from('users')
+          .insert([{
+            username: formData.name.toLowerCase().replace(/\s+/g, ''),
+            password: formData.password || "123",
+            user_type: 'deliverer',
+            deliverer_id: data[0].id
+          }])
+
+        toast({
+          title: "Sucesso",
+          description: "Entregador adicionado com sucesso!",
+        })
+      }
+
+      setFormData({ name: "", phone: "", password: "" })
+      setEditingId(null)
+      loadDeliverers()
+    } catch (error) {
+      toast({
+        title: "Erro",
+        description: editingId ? "Falha ao atualizar entregador" : "Falha ao adicionar entregador",
+        variant: "destructive",
+      })
+      console.error(error)
+    }
   }
 
   const handleEdit = (deliverer: Deliverer) => {
@@ -99,13 +133,40 @@ export function DelivererManager() {
     setEditingId(deliverer.id)
   }
 
-  const handleDelete = (id: string) => {
-    const updated = deliverers.filter((d) => d.id !== id)
-    saveDeliverers(updated)
-    toast({
-      title: "Sucesso",
-      description: "Entregador removido com sucesso!",
-    })
+  const handleDelete = async (id: string) => {
+    if (!confirm("Tem certeza que deseja remover este entregador?")) return
+
+    try {
+      // Primeiro remover o usuário associado
+      const { error: userError } = await supabase
+        .from('users')
+        .delete()
+        .eq('deliverer_id', id)
+
+      if (userError) throw userError
+
+      // Depois remover o entregador
+      const { error } = await supabase
+        .from('deliverers')
+        .delete()
+        .eq('id', id)
+
+      if (error) throw error
+
+      toast({
+        title: "Sucesso",
+        description: "Entregador removido com sucesso!",
+      })
+
+      loadDeliverers()
+    } catch (error) {
+      toast({
+        title: "Erro",
+        description: "Falha ao remover entregador",
+        variant: "destructive",
+      })
+      console.error(error)
+    }
   }
 
   const cancelEdit = () => {
@@ -174,7 +235,13 @@ export function DelivererManager() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {deliverers.length === 0 ? (
+          {isLoading ? (
+            <div className="space-y-4">
+              {[...Array(3)].map((_, i) => (
+                <Skeleton key={i} className="h-12 w-full" />
+              ))}
+            </div>
+          ) : deliverers.length === 0 ? (
             <p className="text-center text-muted-foreground py-8">Nenhum entregador cadastrado ainda</p>
           ) : (
             <Table>

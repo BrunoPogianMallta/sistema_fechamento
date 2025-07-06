@@ -1,4 +1,5 @@
 "use client"
+
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -7,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Pizza, User, Building2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
+import { supabase } from "@/lib/supabaseClient"
 
 export default function LoginPage() {
   const [loginType, setLoginType] = useState<"deliverer" | "restaurant" | null>(null)
@@ -14,7 +16,16 @@ export default function LoginPage() {
   const router = useRouter()
   const { toast } = useToast()
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
+    if (!credentials.username || !credentials.password) {
+      toast({
+        title: "Erro",
+        description: "Preencha usuário e senha",
+        variant: "destructive",
+      })
+      return
+    }
+
     if (loginType === "restaurant") {
       // Login do restaurante - senha fixa para simplicidade
       if (credentials.username === "admin" && credentials.password === "123456") {
@@ -29,29 +40,28 @@ export default function LoginPage() {
         })
       }
     } else if (loginType === "deliverer") {
-      // Login do entregador - verificar se existe
-      const savedDeliverers = localStorage.getItem("deliverers")
-      if (savedDeliverers) {
-        const deliverers = JSON.parse(savedDeliverers)
-        const deliverer = deliverers.find(
-          (d: any) =>
-            d.name.toLowerCase() === credentials.username.toLowerCase() &&
-            (d.password || "123") === credentials.password,
-        )
+      // Login do entregador - buscar no Supabase
+      const { data, error } = await supabase
+        .from("deliverers")
+        .select("*")
+        .eq("name", credentials.username)
+        .eq("password", credentials.password)
+        .single()
 
-        if (deliverer) {
-          localStorage.setItem("userType", "deliverer")
-          localStorage.setItem("userId", deliverer.id)
-          localStorage.setItem("userName", deliverer.name)
-          router.push(`/entregador/${deliverer.id}`)
-        } else {
-          toast({
-            title: "Erro",
-            description: "Entregador não encontrado ou senha incorreta",
-            variant: "destructive",
-          })
-        }
+      if (error || !data) {
+        toast({
+          title: "Erro",
+          description: "Entregador não encontrado ou senha incorreta",
+          variant: "destructive",
+        })
+        return
       }
+
+      // Login OK
+      localStorage.setItem("userType", "deliverer")
+      localStorage.setItem("userId", data.id)
+      localStorage.setItem("userName", data.name)
+      router.push(`/entregador/${data.id}`)
     }
   }
 

@@ -15,6 +15,12 @@ import Link from "next/link"
 import { DistanceCalculator } from "@/utils/distance-calculator"
 import { AuthGuard } from "@/components/auth-guard"
 import { supabase } from "@/lib/supabaseClient"
+import { AddressAutocomplete } from "@/components/AddressAutocomplete"
+
+
+
+
+
 
 interface Neighborhood {
   id: string
@@ -460,13 +466,13 @@ export default function DelivererPage() {
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="address">Endereço Completo *</Label>
-                    <Input
-                      id="address"
-                      value={formData.address}
-                      onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                      placeholder="Rua, número, complemento"
-                      required
+                    <AddressAutocomplete
+                      onSelect={(address, neighborhood) => {
+                        setFormData((prev) => ({ ...prev, address }))
+                        setSelectedNeighborhood(neighborhood)
+                      }}
                       disabled={loading}
+                      availableNeighborhoods={neighborhoods.map(n => n.name)}
                     />
                   </div>
                   <div className="space-y-2">

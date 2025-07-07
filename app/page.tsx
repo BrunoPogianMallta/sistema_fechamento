@@ -29,8 +29,26 @@ export default function LoginPage() {
     if (loginType === "restaurant") {
       // Login do restaurante - senha fixa para simplicidade
       if (credentials.username === "admin" && credentials.password === "123456") {
+        // Busca o ID da config da pizzaria no Supabase
+        const { data, error } = await supabase
+          .from("config")
+          .select("id")
+          .limit(1)
+          .single()
+
+        if (error || !data) {
+          toast({
+            title: "Erro",
+            description: "Não foi possível carregar as configurações da pizzaria.",
+            variant: "destructive",
+          })
+          return
+        }
+
+        // Salva o tipo e o ID real da config no localStorage
         localStorage.setItem("userType", "restaurant")
-        localStorage.setItem("userId", "admin")
+        localStorage.setItem("userId", data.id)
+
         router.push("/dashboard")
       } else {
         toast({

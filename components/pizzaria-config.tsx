@@ -7,39 +7,64 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
 import { MapPin, Save } from "lucide-react"
+import { usePizzariaConfig } from "@/hooks/usePizzariaConfig"
+import { supabase } from "@/lib/supabaseClient"
 
-interface PizzariaConfig {
-  address: string
-  googleMapsApiKey: string
-}
+const FIXED_CONFIG_ID = "7fb78137-ee32-4598-b9b3-eeaf9b63329e"
 
 export function PizzariaConfig() {
-  const [config, setConfig] = useState<PizzariaConfig>({
+  const { config, loading, error, setConfig } = usePizzariaConfig()
+  const [formData, setFormData] = useState({
     address: "",
     googleMapsApiKey: "",
   })
   const { toast } = useToast()
 
   useEffect(() => {
-    const savedConfig = localStorage.getItem("pizzariaConfig")
-    if (savedConfig) {
-      setConfig(JSON.parse(savedConfig))
-    } else {
-      // Configuração padrão
-      setConfig({
-        address: "Rua Principal, 123, Centro",
-        googleMapsApiKey: "",
+    if (config) {
+      setFormData({
+        address: config.address,
+        googleMapsApiKey: config.googleMapsApiKey,
       })
     }
-  }, [])
+  }, [config])
 
-  const handleSave = () => {
-    localStorage.setItem("pizzariaConfig", JSON.stringify(config))
+  const handleSave = async () => {
+    const { error: updateError } = await supabase
+      .from("config")
+      .update({
+        pizzaria_address: formData.address,
+        google_maps_api_key: formData.googleMapsApiKey,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", FIXED_CONFIG_ID)
+
+    if (updateError) {
+      console.error("Erro ao salvar config:", updateError)
+      toast({
+        title: "Erro",
+        description: "Falha ao salvar as configurações.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const updatedConfig = {
+      address: formData.address,
+      googleMapsApiKey: formData.googleMapsApiKey,
+    }
+
+    localStorage.setItem("pizzariaConfig", JSON.stringify(updatedConfig))
+    setConfig(updatedConfig)
+
     toast({
       title: "Sucesso",
       description: "Configurações salvas com sucesso!",
     })
   }
+
+  if (loading) return <p>Carregando configurações...</p>
+  if (error) return <p className="text-red-500">{error}</p>
 
   return (
     <Card>
@@ -54,8 +79,8 @@ export function PizzariaConfig() {
           <Label htmlFor="address">Endereço da Pizzaria</Label>
           <Input
             id="address"
-            value={config.address}
-            onChange={(e) => setConfig({ ...config, address: e.target.value })}
+            value={formData.address}
+            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
             placeholder="Rua, número, bairro, cidade"
           />
           <p className="text-xs text-muted-foreground">
@@ -68,8 +93,8 @@ export function PizzariaConfig() {
           <Input
             id="apiKey"
             type="password"
-            value={config.googleMapsApiKey}
-            onChange={(e) => setConfig({ ...config, googleMapsApiKey: e.target.value })}
+            value={formData.googleMapsApiKey}
+            onChange={(e) => setFormData({ ...formData, googleMapsApiKey: e.target.value })}
             placeholder="Sua chave da API do Google Maps"
           />
           <p className="text-xs text-muted-foreground">

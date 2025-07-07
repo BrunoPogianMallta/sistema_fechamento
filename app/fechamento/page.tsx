@@ -63,6 +63,30 @@ const DELIVERY_TYPES: Record<string, string> = {
   pix: "PIX",
 }
 
+// Função para obter intervalo de data operacional (18:00 do dia até 01:00 do dia seguinte)
+function getOperationalDateRange(dateStr: string) {
+  const date = new Date(dateStr + "T00:00:00")
+
+  const start = new Date(date)
+  start.setHours(18, 0, 0, 0) // 18:00 do dia selecionado
+
+  const end = new Date(date)
+  end.setDate(end.getDate() + 1)
+  end.setHours(1, 0, 0, 0) // 01:00 do dia seguinte
+
+  return { start, end }
+}
+
+// Opcional: para mostrar a data operacional correta no relatório
+function getOperationalDate(createdAt: string): string {
+  const date = new Date(createdAt)
+  const hour = date.getHours()
+  if (hour < 5) {
+    date.setDate(date.getDate() - 1)
+  }
+  return date.toISOString().split("T")[0]
+}
+
 export default function FechamentoPage() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([])
   const [deliverers, setDeliverers] = useState<Deliverer[]>([])
@@ -89,7 +113,6 @@ export default function FechamentoPage() {
         }
 
         setDeliverers(data || [])
-        console.log("Entregadores carregados:", data)
       } catch (error) {
         console.error("Erro inesperado ao buscar entregadores:", error)
       }
@@ -98,22 +121,20 @@ export default function FechamentoPage() {
     fetchDeliverers()
   }, [toast])
 
-  // Carregar entregas
+  // Carregar entregas considerando o horário operacional 18:00-01:00
   useEffect(() => {
     async function fetchDeliveries() {
       setLoading(true)
       try {
-        // Buscar entregas do dia selecionado
-        const startDate = selectedDate + "T00:00:00Z"
-        const endDate = selectedDate + "T23:59:59Z"
-
-        console.log("Buscando entregas entre:", startDate, "e", endDate)
+        const { start, end } = getOperationalDateRange(selectedDate)
+        const startISO = start.toISOString()
+        const endISO = end.toISOString()
 
         const { data, error } = await supabase
           .from("deliveries")
           .select("*")
-          .gte("created_at", startDate)
-          .lte("created_at", endDate)
+          .gte("created_at", startISO)
+          .lt("created_at", endISO)
           .order("created_at", { ascending: false })
 
         if (error) {
@@ -127,8 +148,6 @@ export default function FechamentoPage() {
           return
         }
 
-        console.log("Entregas encontradas:", data?.length || 0)
-        console.log("Dados das entregas:", data)
         setDeliveries(data || [])
       } catch (error) {
         console.error("Erro inesperado ao buscar entregas:", error)
@@ -143,14 +162,8 @@ export default function FechamentoPage() {
 
   // Filtrar entregas por entregador
   const filteredDeliveries = useMemo(() => {
-    const filtered = deliveries.filter((delivery) => {
-      if (selectedDeliverer === "all") return true
-      return delivery.deliverer_id === selectedDeliverer
-    })
-
-    console.log("Entregas filtradas:", filtered.length)
-    console.log("Filtro aplicado - Entregador:", selectedDeliverer)
-    return filtered
+    if (selectedDeliverer === "all") return deliveries
+    return deliveries.filter((d) => d.deliverer_id === selectedDeliverer)
   }, [deliveries, selectedDeliverer])
 
   // Gerar relatório por entregador
@@ -177,7 +190,6 @@ export default function FechamentoPage() {
       report.totalOrderValue += delivery.order_value
       report.totalKm += delivery.round_trip_km || 0
 
-      // Contar por tipo
       if (!report.deliveriesByType[delivery.delivery_type]) {
         report.deliveriesByType[delivery.delivery_type] = 0
         report.valuesByType[delivery.delivery_type] = 0
@@ -191,7 +203,6 @@ export default function FechamentoPage() {
 
   const reports = generateReport()
 
-  // Estatísticas gerais
   const totalDeliveries = filteredDeliveries.length
   const totalDeliveryFees = filteredDeliveries.reduce((sum, d) => sum + d.delivery_fee, 0)
   const totalOrderValue = filteredDeliveries.reduce((sum, d) => sum + d.order_value, 0)
@@ -456,7 +467,7 @@ export default function FechamentoPage() {
                         <div className="space-y-2">
                           {Object.entries(report.valuesByType).map(([type, value]) => (
                             <div key={type} className="flex justify-between items-center">
-                              <span className="text-sm">{DELIVERY_TYPES[type] || type}</span>
+                              <Badge variant="secondary">{DELIVERY_TYPES[type] || type}</Badge>
                               <span className="font-semibold">R$ {value.toFixed(2)}</span>
                             </div>
                           ))}
@@ -469,104 +480,65 @@ export default function FechamentoPage() {
             </div>
           )}
 
-          {/* Lista Detalhada de Entregas */}
-          {filteredDeliveries.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Entregas Detalhadas</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Hora</TableHead>
-                        <TableHead>Entregador</TableHead>
-                        <TableHead>Endereço</TableHead>
-                        <TableHead>Bairro</TableHead>
-                        <TableHead>Tipo</TableHead>
-                        <TableHead>Valor</TableHead>
-                        <TableHead>Taxa</TableHead>
-                        <TableHead>Km</TableHead>
-                        <TableHead></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredDeliveries.map((delivery) => (
-                        <TableRow key={delivery.id}>
-                          <TableCell>
-                            {new Date(delivery.created_at).toLocaleTimeString("pt-BR", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </TableCell>
-                          <TableCell>{delivery.deliverer_name}</TableCell>
-                          <TableCell className="max-w-[200px] truncate" title={delivery.address}>
-                            {delivery.address}
-                          </TableCell>
-                          <TableCell>{delivery.neighborhood}</TableCell>
-                          <TableCell>
-                            <Badge variant="outline">
-                              {DELIVERY_TYPES[delivery.delivery_type] || delivery.delivery_type}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>R$ {delivery.order_value.toFixed(2)}</TableCell>
-                          <TableCell className="text-green-600">R$ {delivery.delivery_fee.toFixed(2)}</TableCell>
-                          <TableCell className="text-orange-600">
-                            {delivery.round_trip_km ? `${delivery.round_trip_km.toFixed(1)} km` : "-"}
-                          </TableCell>
-                          <TableCell>
-                            <Button variant="ghost" size="sm" onClick={() => deleteDelivery(delivery.id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Mensagem quando não há entregas */}
-          {filteredDeliveries.length === 0 && !loading && (
-            <Card>
-              <CardContent className="text-center py-8">
-                <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground mb-4">
-                  Nenhuma entrega encontrada para {selectedDate}
-                  {selectedDeliverer !== "all" &&
-                    ` do entregador ${deliverers.find((d) => d.id === selectedDeliverer)?.name}`}
-                </p>
-
-                {deliverers.length > 0 && (
-                  <div>
-                    <p className="font-semibold mb-2">Entregadores disponíveis:</p>
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <Button
-                        variant={selectedDeliverer === "all" ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setSelectedDeliverer("all")}
-                      >
-                        Todos
-                      </Button>
-                      {deliverers.map((deliverer) => (
+          {/* Tabela de entregas */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Detalhes das Entregas</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Entregador</TableHead>
+                    <TableHead>Endereço</TableHead>
+                    <TableHead>Entrega</TableHead>
+                    <TableHead>Valor Pedido</TableHead>
+                    <TableHead>Taxa</TableHead>
+                    <TableHead>Data / Hora</TableHead>
+                    <TableHead>Km Ida e Volta</TableHead>
+                    <TableHead>Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredDeliveries.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center text-muted-foreground">
+                        Nenhuma entrega encontrada para o filtro selecionado.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {filteredDeliveries.map((delivery) => (
+                    <TableRow key={delivery.id}>
+                      <TableCell>{delivery.deliverer_name}</TableCell>
+                      <TableCell>
+                        {delivery.address} - {delivery.neighborhood}
+                      </TableCell>
+                      <TableCell>{DELIVERY_TYPES[delivery.delivery_type] || delivery.delivery_type}</TableCell>
+                      <TableCell>R$ {delivery.order_value.toFixed(2)}</TableCell>
+                      <TableCell>R$ {delivery.delivery_fee.toFixed(2)}</TableCell>
+                      <TableCell>
+                        {new Date(delivery.created_at).toLocaleString("pt-BR", {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                        })}
+                      </TableCell>
+                      <TableCell>{delivery.round_trip_km ? delivery.round_trip_km.toFixed(1) : "-"}</TableCell>
+                      <TableCell>
                         <Button
-                          key={deliverer.id}
-                          variant={selectedDeliverer === deliverer.id ? "default" : "outline"}
+                          variant="destructive"
                           size="sm"
-                          onClick={() => setSelectedDeliverer(deliverer.id)}
+                          onClick={() => deleteDelivery(delivery.id)}
+                          aria-label="Remover entrega"
                         >
-                          {deliverer.name}
+                          <Trash2 className="h-4 w-4" />
                         </Button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </AuthGuard>

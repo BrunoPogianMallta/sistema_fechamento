@@ -16,6 +16,8 @@ import { DistanceCalculator } from "@/utils/distance-calculator"
 import { AuthGuard } from "@/components/auth-guard"
 import { supabase } from "@/lib/supabaseClient"
 import { AddressAutocomplete } from "@/components/AddressAutocomplete"
+import { getOperationalDate } from "@/utils/dateUtils"
+
 
 
 
@@ -80,40 +82,47 @@ export default function DelivererPage() {
 
   // Função para buscar entregas do dia
   const fetchTodayDeliveries = useCallback(async () => {
-    if (!delivererId) return
+  if (!delivererId) return
 
-    try {
-      const today = new Date().toISOString().split("T")[0]
-      const startDate = `${today}T00:00:00Z`
-      const endDate = `${today}T23:59:59Z`
+  try {
+    const now = new Date()
+    const operationalDate = getOperationalDate(now)
 
-      const { data, error } = await supabase
-        .from("deliveries")
-        .select("*")
-        .eq("deliverer_id", delivererId)
-        .gte("created_at", startDate)
-        .lte("created_at", endDate)
-        .order("created_at", { ascending: false })
+    // Início: 18:00 do dia operacional
+    const startDate = `${operationalDate}T18:00:00.000Z`
 
-      if (error) {
-        console.error("Erro ao buscar entregas:", error)
-        toast({
-          title: "Erro",
-          description: "Não foi possível carregar entregas.",
-          variant: "destructive",
-        })
-        return
-      }
+    // Fim: 01:00 do dia seguinte
+    const endDateObj = new Date(`${operationalDate}T01:00:00.000Z`)
+    endDateObj.setDate(endDateObj.getDate() + 1)
+    const endDate = endDateObj.toISOString()
 
-      // Manter entregas locais que ainda estão sincronizando
-      setDeliveries(prev => [
-        ...(data || []),
-        ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
-      ])
-    } catch (error) {
-      console.error("Erro inesperado:", error)
+    const { data, error } = await supabase
+      .from("deliveries")
+      .select("*")
+      .eq("deliverer_id", delivererId)
+      .gte("created_at", startDate)
+      .lte("created_at", endDate)
+      .order("created_at", { ascending: false })
+
+    if (error) {
+      console.error("Erro ao buscar entregas:", error)
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar entregas.",
+        variant: "destructive",
+      })
+      return
     }
-  }, [delivererId, toast])
+
+    // Mantém entregas locais que ainda estão sincronizando
+    setDeliveries(prev => [
+      ...(data || []),
+      ...prev.filter(d => d.isSyncing && !data?.some(db => db.id === d.id)),
+    ])
+  } catch (error) {
+    console.error("Erro inesperado:", error)
+  }
+}, [delivererId, toast])
 
   // Carregar entregador
   useEffect(() => {

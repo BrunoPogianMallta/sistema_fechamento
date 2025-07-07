@@ -63,28 +63,24 @@ const DELIVERY_TYPES: Record<string, string> = {
   pix: "PIX",
 }
 
-// Função para obter intervalo de data operacional (18:00 do dia até 01:00 do dia seguinte)
-function getOperationalDateRange(dateStr: string) {
-  const date = new Date(dateStr + "T00:00:00")
+// Função para obter intervalo de data operacional (18:00 do dia até 01:00 do dia seguinte) convertendo para UTC (fuso -3)
+// Assim, para 18:00 BRT, converte para 21:00 UTC; para 01:00 BRT (dia seguinte), converte para 04:00 UTC
+function getOperationalDateRangeUTC(dateStr: string) {
+  // data no horário local Brasília (GMT-3)
+  const date = new Date(dateStr + "T00:00:00-03:00") // força fuso -3 para evitar confusão
 
-  const start = new Date(date)
-  start.setHours(18, 0, 0, 0) // 18:00 do dia selecionado
+  const startLocal = new Date(date)
+  startLocal.setHours(18, 0, 0, 0) // 18:00 local
 
-  const end = new Date(date)
-  end.setDate(end.getDate() + 1)
-  end.setHours(1, 0, 0, 0) // 01:00 do dia seguinte
+  const endLocal = new Date(date)
+  endLocal.setDate(endLocal.getDate() + 1)
+  endLocal.setHours(1, 0, 0, 0) // 01:00 local dia seguinte
 
-  return { start, end }
-}
+  // Converter para UTC
+  const startUTC = new Date(startLocal.getTime() + 3 * 60 * 60 * 1000)
+  const endUTC = new Date(endLocal.getTime() + 3 * 60 * 60 * 1000)
 
-// Opcional: para mostrar a data operacional correta no relatório
-function getOperationalDate(createdAt: string): string {
-  const date = new Date(createdAt)
-  const hour = date.getHours()
-  if (hour < 5) {
-    date.setDate(date.getDate() - 1)
-  }
-  return date.toISOString().split("T")[0]
+  return { start: startUTC, end: endUTC }
 }
 
 export default function FechamentoPage() {
@@ -121,12 +117,12 @@ export default function FechamentoPage() {
     fetchDeliverers()
   }, [toast])
 
-  // Carregar entregas considerando o horário operacional 18:00-01:00
+  // Carregar entregas considerando o horário operacional 18:00-01:00 (convertido para UTC)
   useEffect(() => {
     async function fetchDeliveries() {
       setLoading(true)
       try {
-        const { start, end } = getOperationalDateRange(selectedDate)
+        const { start, end } = getOperationalDateRangeUTC(selectedDate)
         const startISO = start.toISOString()
         const endISO = end.toISOString()
 

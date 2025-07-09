@@ -1,7 +1,6 @@
 "use client"
 
-import type React from "react"
-import { useEffect, useState, useCallback, useRef } from "react"
+import { useEffect, useState, useCallback, useRef, useMemo } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -41,7 +40,7 @@ interface Delivery {
   distance_km: number | null
   round_trip_km: number | null
   created_at: string
-  isSyncing?: boolean
+  displayed_time?: string
 }
 
 const DELIVERY_TYPES = [
@@ -71,34 +70,55 @@ export default function DelivererPage() {
   const [loading, setLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(true)
   const subscriptionRef = useRef<any>(null)
+  const isInitializedRef = useRef(false)
 
-  // Função para obter informações do dia atual
-  const getTodayInfo = useCallback(() => {
-    const today = new Date()
+  // Calcula o período do turno (18:00 até 02:30 do dia seguinte)
+  const shiftInfo = useMemo(() => {
+    const now = new Date()
+    const currentHour = now.getHours()
+    const currentMinutes = now.getMinutes()
+    
+    // Verifica se está no período de tolerância (00:00-02:30)
+    const isGracePeriod = (currentHour >= 0 && currentHour < 2) || 
+                         (currentHour === 2 && currentMinutes <= 30)
+    
+    // Data de referência (dia do turno)
+    const referenceDate = isGracePeriod ? 
+      new Date(now.getTime() - 24 * 60 * 60 * 1000) : // Volta um dia se for período de tolerância
+      now
+
+    // Calcula as datas de início e fim do turno
+    const startDate = new Date(referenceDate)
+    startDate.setHours(18, 0, 0, 0)
+    
+    const endDate = new Date(referenceDate)
+    endDate.setDate(endDate.getDate() + 1)
+    endDate.setHours(2, 30, 0, 0)
+
     return {
-      date: today.toLocaleDateString("pt-BR", {
+      date: referenceDate.toLocaleDateString("pt-BR", {
         weekday: "long",
         day: "2-digit",
         month: "long",
       }),
-      dateString: today.toISOString().split("T")[0],
+      dateString: referenceDate.toISOString().split("T")[0],
+      startDate,
+      endDate,
+      isGracePeriod,
+      periodText: `${referenceDate.toLocaleDateString("pt-BR")} 18:00 até ${endDate.toLocaleDateString("pt-BR")} 02:30`
     }
   }, [])
 
-  // Função simplificada para buscar entregas do dia atual (mesma lógica da página de fechamento)
-  const fetchTodayDeliveries = useCallback(async () => {
+  // Busca as entregas do turno atual
+  const fetchShiftDeliveries = useCallback(async () => {
     if (!delivererId) return
 
     try {
       setLoading(true)
-
-      // Usar a mesma lógica da página de fechamento
-      const today = new Date().toISOString().split("T")[0]
-      const startDate = today + "T00:00:00Z"
-      const endDate = today + "T23:59:59Z"
-
-      console.log("Buscando entregas entre:", startDate, "e", endDate)
-      console.log("Para entregador:", delivererId)
+      
+      // Formata as datas para o filtro
+      const startDate = shiftInfo.startDate.toISOString()
+      const endDate = shiftInfo.endDate.toISOString()
 
       const { data, error } = await supabase
         .from("deliveries")
@@ -108,45 +128,44 @@ export default function DelivererPage() {
         .lte("created_at", endDate)
         .order("created_at", { ascending: false })
 
-      if (error) {
-        console.error("Erro ao buscar entregas:", error)
-        toast({
-          title: "Erro",
-          description: "Não foi possível carregar as entregas do dia.",
-          variant: "destructive",
+      if (error) throw error
+
+      // Adiciona o horário local formatado para exibição
+      const deliveriesWithLocalTime = data?.map(delivery => ({
+        ...delivery,
+        displayed_time: new Date(delivery.created_at).toLocaleTimeString('pt-BR', {
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'America/Sao_Paulo'
         })
-        return
-      }
+      })) || []
 
-      console.log("Entregas encontradas:", data?.length || 0)
-      console.log("Dados das entregas:", data)
-
-      // Atualizar o estado com as entregas do banco
-      setDeliveries((prev) => {
-        // Manter apenas entregas que ainda estão sincronizando
-        const syncingDeliveries = prev.filter((d) => d.isSyncing && !data?.some((db) => db.id === d.id))
-        return [...(data || []), ...syncingDeliveries]
-      })
+      setDeliveries(deliveriesWithLocalTime)
     } catch (error) {
-      console.error("Erro inesperado:", error)
+      console.error("Erro ao buscar entregas:", error)
       toast({
         title: "Erro",
-        description: "Erro inesperado ao carregar entregas.",
+        description: "Não foi possível carregar as entregas do turno.",
         variant: "destructive",
       })
     } finally {
       setLoading(false)
     }
-  }, [delivererId, toast])
+  }, [delivererId, shiftInfo, toast])
 
-  // Carregar entregador
+  // Carrega os dados iniciais
   useEffect(() => {
-    async function fetchDeliverer() {
-      if (!delivererId) return
+    if (!delivererId || isInitializedRef.current) return
 
-      const { data, error } = await supabase.from("deliverers").select("*").eq("id", delivererId).single()
+    const loadInitialData = async () => {
+      // Carrega entregador
+      const { data: delivererData, error: delivererError } = await supabase
+        .from("deliverers")
+        .select("*")
+        .eq("id", delivererId)
+        .single()
 
-      if (error || !data) {
+      if (delivererError || !delivererData) {
         toast({
           title: "Erro",
           description: "Entregador não encontrado.",
@@ -156,40 +175,28 @@ export default function DelivererPage() {
         return
       }
 
-      setDeliverer(data)
-    }
+      setDeliverer(delivererData)
 
-    fetchDeliverer()
-  }, [delivererId, router, toast])
+      // Carrega bairros
+      const { data: neighborhoodsData, error: neighborhoodsError } = await supabase
+        .from("neighborhoods")
+        .select("*")
+        .order("name", { ascending: true })
 
-  // Carregar bairros
-  useEffect(() => {
-    async function fetchNeighborhoods() {
-      const { data, error } = await supabase.from("neighborhoods").select("*").order("name", { ascending: true })
-
-      if (error) {
-        toast({
-          title: "Erro",
-          description: "Não foi possível carregar bairros.",
-          variant: "destructive",
-        })
-        return
+      if (!neighborhoodsError) {
+        setNeighborhoods(neighborhoodsData || [])
       }
 
-      setNeighborhoods(data || [])
+      isInitializedRef.current = true
+      fetchShiftDeliveries()
     }
 
-    fetchNeighborhoods()
-  }, [toast])
+    loadInitialData()
+  }, [delivererId, router, toast, fetchShiftDeliveries])
 
-  // Carregar entregas iniciais
+  // Configura a subscription em tempo real
   useEffect(() => {
-    fetchTodayDeliveries()
-  }, [fetchTodayDeliveries])
-
-  // Configurar Real-time subscriptions
-  useEffect(() => {
-    if (!delivererId) return
+    if (!delivererId || subscriptionRef.current) return
 
     const channel = supabase
       .channel(`deliveries-${delivererId}`)
@@ -202,25 +209,33 @@ export default function DelivererPage() {
           filter: `deliverer_id=eq.${delivererId}`,
         },
         async (payload) => {
-          console.log("Real-time event:", payload.eventType, payload)
-
-          // Recarregar entregas após qualquer mudança
-          await fetchTodayDeliveries()
-
-          if (payload.eventType === "INSERT") {
-            toast({
-              title: "✅ Nova entrega registrada",
-              description: `Entrega para ${payload.new?.neighborhood || "endereço"} adicionada.`,
-            })
+          const delivery = payload.new as Delivery
+          const deliveryDate = new Date(delivery.created_at)
+          
+          // Verifica se está dentro do turno atual
+          if (deliveryDate >= shiftInfo.startDate && deliveryDate <= shiftInfo.endDate) {
+            if (payload.eventType === "INSERT") {
+              // Adiciona o horário local formatado
+              const deliveryWithLocalTime = {
+                ...delivery,
+                displayed_time: deliveryDate.toLocaleTimeString('pt-BR', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'America/Sao_Paulo'
+                })
+              }
+              
+              setDeliveries(prev => [deliveryWithLocalTime, ...prev])
+              toast({
+                title: "✅ Nova entrega registrada",
+                description: `Entrega para ${delivery.neighborhood} adicionada.`,
+              })
+            } else if (payload.eventType === "DELETE") {
+              setDeliveries(prev => prev.filter(d => d.id !== payload.old.id))
+            }
           }
-        },
+        }
       )
-      .on("presence", { event: "sync" }, () => {
-        setIsConnected(true)
-      })
-      .on("presence", { event: "leave" }, () => {
-        setIsConnected(false)
-      })
       .subscribe()
 
     subscriptionRef.current = channel
@@ -230,211 +245,203 @@ export default function DelivererPage() {
         supabase.removeChannel(subscriptionRef.current)
       }
     }
-  }, [delivererId, fetchTodayDeliveries, toast])
+  }, [delivererId, shiftInfo, toast])
 
-  // Atualizar taxa quando bairro muda
+  // Atualiza a taxa de entrega quando muda o bairro
   useEffect(() => {
-    const neighborhood = neighborhoods.find((n) => n.name === selectedNeighborhood)
+    const neighborhood = neighborhoods.find(n => n.name === selectedNeighborhood)
     setDeliveryFee(neighborhood?.delivery_fee || 0)
   }, [selectedNeighborhood, neighborhoods])
 
-  // Função para adicionar entrega
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  // Registra uma nova entrega
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault()
 
-    if (!formData.address || !selectedNeighborhood || !formData.deliveryType || !formData.orderValue) {
-      toast({
-        title: "Erro",
-        description: "Preencha todos os campos obrigatórios.",
-        variant: "destructive",
-      })
-      return
-    }
+      if (!formData.address || !selectedNeighborhood || !formData.deliveryType || !formData.orderValue) {
+        toast({
+          title: "Erro",
+          description: "Preencha todos os campos obrigatórios.",
+          variant: "destructive",
+        })
+        return
+      }
 
-    if (!deliverer) return
+      if (!deliverer) return
 
-    setLoading(true)
-
-    try {
-      // Calcular distância
-      const calculator = DistanceCalculator.getInstance()
-      let distanceResult = { distanceKm: 0, roundTripKm: 0 }
+      setLoading(true)
 
       try {
-        distanceResult = await calculator.calculateDistance(formData.address)
+        // Calcula distância
+        const calculator = DistanceCalculator.getInstance()
+        let distanceResult = { distanceKm: 0, roundTripKm: 0 }
+
+        try {
+          distanceResult = await calculator.calculateDistance(formData.address)
+        } catch (error) {
+          console.warn("Erro no cálculo de distância:", error)
+        }
+
+        // Prepara os dados da entrega com o horário atual
+        const now = new Date()
+        const deliveryData = {
+          deliverer_id: deliverer.id,
+          deliverer_name: deliverer.name,
+          address: formData.address,
+          neighborhood: selectedNeighborhood,
+          delivery_type: formData.deliveryType,
+          order_value: Number(formData.orderValue),
+          delivery_fee: deliveryFee,
+          distance_km: distanceResult.distanceKm,
+          round_trip_km: distanceResult.roundTripKm,
+          created_at: now.toISOString() // Armazena como UTC
+        }
+
+        // Insere no banco de dados
+        const { error } = await supabase.from("deliveries").insert([deliveryData])
+
+        if (error) throw error
+
+        // Limpa o formulário
+        setFormData({ address: "", deliveryType: "", orderValue: "" })
+        setSelectedNeighborhood("")
+
+        toast({
+          title: "✅ Sucesso",
+          description: "Entrega registrada com sucesso!",
+        })
       } catch (error) {
-        console.warn("⚠️ Falha no cálculo de distância:", error)
+        console.error("Erro ao registrar entrega:", error)
+        toast({
+          title: "Erro",
+          description: "Falha ao registrar entrega. Tente novamente.",
+          variant: "destructive",
+        })
+      } finally {
+        setLoading(false)
       }
+    },
+    [formData, selectedNeighborhood, deliveryFee, deliverer, toast]
+  )
 
-      // Dados da entrega
-      const deliveryData = {
-        deliverer_id: deliverer.id,
-        deliverer_name: deliverer.name,
-        address: formData.address,
-        neighborhood: selectedNeighborhood,
-        delivery_type: formData.deliveryType,
-        order_value: Number.parseFloat(formData.orderValue),
-        delivery_fee: deliveryFee,
-        distance_km: distanceResult.distanceKm,
-        round_trip_km: distanceResult.roundTripKm,
+  // Remove uma entrega
+  const deleteDelivery = useCallback(
+    async (deliveryId: string) => {
+      if (!confirm("Tem certeza que deseja remover esta entrega?")) return
+
+      try {
+        const { error } = await supabase.from("deliveries").delete().eq("id", deliveryId)
+        if (error) throw error
+
+        toast({
+          title: "Sucesso",
+          description: "Entrega removida com sucesso.",
+        })
+      } catch (error) {
+        console.error("Erro ao remover entrega:", error)
+        toast({
+          title: "Erro",
+          description: "Falha ao remover entrega.",
+          variant: "destructive",
+        })
       }
+    },
+    [toast]
+  )
 
-      console.log("Inserindo entrega:", deliveryData)
-
-      // Inserir no banco de dados
-      const { data, error } = await supabase.from("deliveries").insert([deliveryData]).select().single()
-
-      if (error) {
-        console.error("Erro ao inserir entrega:", error)
-        throw error
-      }
-
-      console.log("Entrega inserida com sucesso:", data)
-
-      // Limpar formulário apenas após sucesso
-      setFormData({ address: "", deliveryType: "", orderValue: "" })
-      setSelectedNeighborhood("")
-      setDeliveryFee(0)
-
-      // Recarregar entregas para garantir sincronização
-      await fetchTodayDeliveries()
-
-      toast({
-        title: "✅ Sucesso",
-        description: "Entrega registrada com sucesso!",
-        variant: "default",
-      })
-    } catch (error) {
-      console.error("Erro ao registrar entrega:", error)
-
-      toast({
-        title: "Erro",
-        description: "Falha ao registrar entrega. Tente novamente.",
-        variant: "destructive",
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Função para deletar entrega
-  async function deleteDelivery(deliveryId: string) {
-    if (!confirm("Tem certeza que deseja remover esta entrega?")) return
-
-    try {
-      const { error } = await supabase.from("deliveries").delete().eq("id", deliveryId)
-
-      if (error) throw error
-
-      // Recarregar entregas após deletar
-      await fetchTodayDeliveries()
-
-      toast({
-        title: "Sucesso",
-        description: "Entrega removida com sucesso.",
-        variant: "default",
-      })
-    } catch (error) {
-      console.error("Erro ao deletar entrega:", error)
-      toast({
-        title: "Erro",
-        description: "Falha ao remover entrega.",
-        variant: "destructive",
-      })
-    }
-  }
-
-  function navigateToAddress(address: string) {
+  // Navega para o endereço no Google Maps
+  const navigateToAddress = useCallback((address: string) => {
     const encodedAddress = encodeURIComponent(address)
-    const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodedAddress}`
-    window.open(googleMapsUrl, "_blank")
-  }
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodedAddress}`, "_blank")
+  }, [])
 
-  function handleLogout() {
+  // Faz logout do sistema
+  const handleLogout = useCallback(() => {
     localStorage.removeItem("userType")
     localStorage.removeItem("userId")
     localStorage.removeItem("userName")
     router.push("/")
-  }
+  }, [router])
 
-  // Função para imprimir/exportar o relatório diário
-  const handlePrintDailyReport = () => {
-    const { date, dateString } = getTodayInfo()
-
-    const reportContent = `
+  // Gera relatório impresso
+  const handlePrintReport = useCallback(() => {
+    const printContent = `
       <html>
         <head>
-          <title>Relatório Diário - ${dateString}</title>
+          <title>Relatório de Turno - ${shiftInfo.periodText}</title>
           <style>
             body { font-family: Arial, sans-serif; margin: 20px; }
             h1 { color: #333; text-align: center; }
-            .header { margin-bottom: 20px; }
+            .header { margin-bottom: 20px; text-align: center; }
             .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 20px; }
             .stat-card { border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
             .deliveries { margin-top: 20px; }
             .delivery-item { border-bottom: 1px solid #eee; padding: 10px 0; }
             .total { font-weight: bold; margin-top: 20px; text-align: right; }
+            .delivery-type { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; }
           </style>
         </head>
         <body>
-          <h1>Relatório Diário</h1>
-          
+          <h1>Relatório de Turno</h1>
           <div class="header">
-            <p><strong>Data:</strong> ${date}</p>
+            <p><strong>Período:</strong> ${shiftInfo.periodText}</p>
             <p><strong>Entregador:</strong> ${deliverer?.name || ""}</p>
+            <p><small>(Tolerância até 02:30 para lançamentos)</small></p>
           </div>
           
           <div class="stats">
-            <div class="stat-card">
-              <strong>Total de Entregas:</strong> ${todayStats.total}
-            </div>
-            <div class="stat-card">
-              <strong>Valor em Pedidos:</strong> R$ ${todayStats.totalValue.toFixed(2)}
-            </div>
-            <div class="stat-card">
-              <strong>Total em Taxas:</strong> R$ ${todayStats.totalFees.toFixed(2)}
-            </div>
-            <div class="stat-card">
-              <strong>Km Rodados:</strong> ${todayStats.totalKm.toFixed(1)} km
-            </div>
+            <div class="stat-card"><strong>Total de Entregas:</strong> ${deliveries.length}</div>
+            <div class="stat-card"><strong>Valor em Pedidos:</strong> R$ ${deliveries.reduce((sum, d) => sum + d.order_value, 0).toFixed(2)}</div>
+            <div class="stat-card"><strong>Total em Taxas:</strong> R$ ${deliveries.reduce((sum, d) => sum + d.delivery_fee, 0).toFixed(2)}</div>
+            <div class="stat-card"><strong>Km Rodados:</strong> ${deliveries.reduce((sum, d) => sum + (d.round_trip_km || 0), 0).toFixed(1)} km</div>
           </div>
           
           <div class="deliveries">
             <h3>Detalhes das Entregas:</h3>
-            ${deliveries
-              .map(
-                (d) => `
-              <div class="delivery-item">
-                <p><strong>${new Date(d.created_at).toLocaleTimeString()}</strong> - ${d.neighborhood} | ${DELIVERY_TYPES.find((t) => t.value === d.delivery_type)?.label || d.delivery_type}</p>
-                <p>Endereço: ${d.address}</p>
-                <p>Pedido: R$ ${d.order_value.toFixed(2)} | Taxa: R$ ${d.delivery_fee.toFixed(2)} ${d.round_trip_km ? `| Distância: ${d.round_trip_km.toFixed(1)} km` : ""}</p>
-              </div>
-            `,
-              )
-              .join("")}
+            ${deliveries.map(d => {
+              const type = DELIVERY_TYPES.find(t => t.value === d.delivery_type)
+              return `
+                <div class="delivery-item">
+                  <p>
+                    <strong>${d.displayed_time || new Date(d.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</strong> - 
+                    ${d.neighborhood} | 
+                    <span class="delivery-type" style="background-color: ${type?.color.split(' ')[0]}; color: ${type?.color.split(' ')[2]}">
+                      ${type?.label || d.delivery_type}
+                    </span>
+                  </p>
+                  <p>Endereço: ${d.address}</p>
+                  <p>
+                    Pedido: R$ ${d.order_value.toFixed(2)} | 
+                    Taxa: R$ ${d.delivery_fee.toFixed(2)} | 
+                    ${d.round_trip_km ? `Distância: ${d.round_trip_km.toFixed(1)} km` : ''}
+                  </p>
+                </div>
+              `
+            }).join('')}
           </div>
           
           <div class="total">
-            <p><strong>Total Geral:</strong> R$ ${(todayStats.totalValue + todayStats.totalFees).toFixed(2)}</p>
+            <p>Total Geral: R$ ${(deliveries.reduce((sum, d) => sum + d.order_value + d.delivery_fee, 0).toFixed(2))}</p>
           </div>
         </body>
       </html>
     `
 
-    // Abre uma nova janela para impressão
     const printWindow = window.open("", "_blank")
-    printWindow?.document.write(reportContent)
+    printWindow?.document.write(printContent)
     printWindow?.document.close()
-    printWindow?.print()
-  }
+    setTimeout(() => {
+      printWindow?.print()
+    }, 200)
+  }, [deliverer, deliveries, shiftInfo])
 
-  // Estatísticas do dia
-  const todayStats = {
+  // Calcula as estatísticas do turno
+  const shiftStats = useMemo(() => ({
     total: deliveries.length,
     totalFees: deliveries.reduce((sum, d) => sum + d.delivery_fee, 0),
     totalValue: deliveries.reduce((sum, d) => sum + d.order_value, 0),
     totalKm: deliveries.reduce((sum, d) => sum + (d.round_trip_km || 0), 0),
-  }
+  }), [deliveries])
 
   if (!deliverer) {
     return (
@@ -455,8 +462,8 @@ export default function DelivererPage() {
     <AuthGuard allowedUserTypes={["restaurant", "deliverer"]} delivererId={delivererId}>
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-4">
         <div className="max-w-6xl mx-auto">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
+          {/* Cabeçalho */}
+          <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
             <div className="flex items-center gap-4">
               <Link href="/">
                 <Button variant="outline" size="sm">
@@ -471,13 +478,18 @@ export default function DelivererPage() {
             </div>
 
             <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-900">Relatório Diário</h1>
-              <p className="text-gray-600">{getTodayInfo().date}</p>
-              <p className="text-sm text-gray-500">Entregas de hoje</p>
+              <h1 className="text-2xl font-bold text-gray-900">Relatório de Turno</h1>
+              <p className="text-gray-600">{shiftInfo.periodText}</p>
+              <p className="text-sm text-gray-500">(Tolerância até 02:30 para lançamentos)</p>
             </div>
 
             <div className="flex items-center gap-4">
-              <Button onClick={handlePrintDailyReport} variant="outline" className="bg-white hover:bg-gray-50">
+              <Button 
+                onClick={handlePrintReport} 
+                variant="outline" 
+                className="bg-white hover:bg-gray-50"
+                disabled={deliveries.length === 0}
+              >
                 <Printer className="h-4 w-4 mr-2" />
                 Imprimir
               </Button>
@@ -497,75 +509,52 @@ export default function DelivererPage() {
             </div>
           </div>
 
-          {/* Debug Info */}
-          <Card className="mb-4 bg-blue-50 border-blue-200">
-            <CardContent className="pt-4">
-              <div className="text-sm text-blue-800">
-                <p>
-                  <strong>Debug:</strong> {deliveries.length} entregas carregadas para hoje ({getTodayInfo().dateString}
-                  ) | Entregador: {deliverer.name}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Status de sincronização */}
-          <div className="mb-4">
-            <div className="flex items-center gap-2 text-sm">
-              <div
-                className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`}
-              ></div>
-              <span className={isConnected ? "text-green-600" : "text-red-600"}>
-                {isConnected ? "Sincronização automática ativa" : "Reconectando..."}
-              </span>
-            </div>
-          </div>
-
-          {/* Estatísticas do dia */}
+          {/* Estatísticas */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <Card className="transition-all duration-300 hover:shadow-lg">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Entregas Hoje</CardTitle>
+            <Card className="hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Entregas</CardTitle>
                 <Package className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{todayStats.total}</div>
+                <div className="text-2xl font-bold">{shiftStats.total}</div>
               </CardContent>
             </Card>
 
-            <Card className="transition-all duration-300 hover:shadow-lg">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Total em Taxas</CardTitle>
+            <Card className="hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Taxas</CardTitle>
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-green-600">R$ {todayStats.totalFees.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-green-600">R$ {shiftStats.totalFees.toFixed(2)}</div>
               </CardContent>
             </Card>
 
-            <Card className="transition-all duration-300 hover:shadow-lg">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Valor Total</CardTitle>
+            <Card className="hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Valor Pedidos</CardTitle>
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-blue-600">R$ {todayStats.totalValue.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-blue-600">R$ {shiftStats.totalValue.toFixed(2)}</div>
               </CardContent>
             </Card>
 
-            <Card className="transition-all duration-300 hover:shadow-lg">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <Card className="hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium">Km Rodados</CardTitle>
                 <Navigation className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-orange-600">{todayStats.totalKm.toFixed(1)} km</div>
+                <div className="text-2xl font-bold text-orange-600">{shiftStats.totalKm.toFixed(1)} km</div>
               </CardContent>
             </Card>
           </div>
 
+          {/* Corpo principal */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Formulário de Nova Entrega */}
+            {/* Formulário de nova entrega */}
             <Card>
               <CardHeader>
                 <CardTitle>Nova Entrega</CardTitle>
@@ -576,11 +565,11 @@ export default function DelivererPage() {
                     <Label htmlFor="address">Endereço Completo *</Label>
                     <AddressAutocomplete
                       onSelect={(address, neighborhood) => {
-                        setFormData((prev) => ({ ...prev, address }))
+                        setFormData(prev => ({ ...prev, address }))
                         setSelectedNeighborhood(neighborhood)
                       }}
                       disabled={loading}
-                      availableNeighborhoods={neighborhoods.map((n) => n.name)}
+                      availableNeighborhoods={neighborhoods.map(n => n.name)}
                     />
                   </div>
 
@@ -596,11 +585,13 @@ export default function DelivererPage() {
                         <SelectValue placeholder="Selecione o bairro" />
                       </SelectTrigger>
                       <SelectContent>
-                        {neighborhoods.map((n) => (
+                        {neighborhoods.map(n => (
                           <SelectItem key={n.id} value={n.name}>
                             <div className="flex items-center justify-between w-full">
                               <span>{n.name}</span>
-                              <span className="text-sm text-muted-foreground ml-2">R$ {n.delivery_fee.toFixed(2)}</span>
+                              <span className="text-sm text-muted-foreground ml-2">
+                                R$ {n.delivery_fee.toFixed(2)}
+                              </span>
                             </div>
                           </SelectItem>
                         ))}
@@ -612,7 +603,7 @@ export default function DelivererPage() {
                     <Label htmlFor="deliveryType">Tipo de Entrega *</Label>
                     <Select
                       value={formData.deliveryType}
-                      onValueChange={(value) => setFormData({ ...formData, deliveryType: value })}
+                      onValueChange={value => setFormData({ ...formData, deliveryType: value })}
                       required
                       disabled={loading}
                     >
@@ -620,7 +611,7 @@ export default function DelivererPage() {
                         <SelectValue placeholder="Selecione o tipo" />
                       </SelectTrigger>
                       <SelectContent>
-                        {DELIVERY_TYPES.map((type) => (
+                        {DELIVERY_TYPES.map(type => (
                           <SelectItem key={type.value} value={type.value}>
                             {type.label}
                           </SelectItem>
@@ -637,7 +628,7 @@ export default function DelivererPage() {
                       step="0.01"
                       min="0"
                       value={formData.orderValue}
-                      onChange={(e) => setFormData({ ...formData, orderValue: e.target.value })}
+                      onChange={e => setFormData({ ...formData, orderValue: e.target.value })}
                       placeholder="0,00"
                       required
                       disabled={loading}
@@ -649,23 +640,25 @@ export default function DelivererPage() {
                     <Card className="p-3">
                       <div className="flex items-center gap-2">
                         <DollarSign className="h-4 w-4 text-green-600" />
-                        <span className="font-semibold text-green-600">R$ {deliveryFee.toFixed(2)}</span>
+                        <span className="font-semibold text-green-600">
+                          R$ {deliveryFee.toFixed(2)}
+                        </span>
                       </div>
                     </Card>
                   </div>
 
-                  <Button type="submit" className="w-full" size="lg" disabled={loading || !isConnected}>
+                  <Button type="submit" className="w-full" size="lg" disabled={loading}>
                     {loading ? "Registrando..." : "Registrar Entrega"}
                   </Button>
                 </form>
               </CardContent>
             </Card>
 
-            {/* Lista de Entregas do Dia */}
+            {/* Lista de entregas */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center justify-between">
-                  <span>Entregas de Hoje</span>
+                  <span>Entregas do Turno</span>
                   <Badge variant="secondary">{deliveries.length}</Badge>
                 </CardTitle>
               </CardHeader>
@@ -674,22 +667,18 @@ export default function DelivererPage() {
                   {deliveries.length === 0 ? (
                     <div className="text-center text-muted-foreground py-8">
                       <Package className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p>Nenhuma entrega registrada hoje</p>
+                      <p>Nenhuma entrega registrada no turno</p>
+                      <p className="text-sm">{shiftInfo.periodText}</p>
                     </div>
                   ) : (
-                    deliveries.map((delivery) => {
-                      const deliveryType = DELIVERY_TYPES.find((t) => t.value === delivery.delivery_type)
+                    deliveries.map(delivery => {
+                      const deliveryType = DELIVERY_TYPES.find(t => t.value === delivery.delivery_type)
                       const deliveryTime = new Date(delivery.created_at)
                       const now = new Date()
-                      const hoursDiff = Math.abs(now.getTime() - deliveryTime.getTime()) / (1000 * 60 * 60)
+                      const hoursDiff = (now.getTime() - deliveryTime.getTime()) / (1000 * 60 * 60)
 
                       return (
-                        <Card
-                          key={delivery.id}
-                          className={`p-3 transition-all duration-300 hover:shadow-md ${
-                            delivery.isSyncing ? "opacity-80 bg-gray-50 animate-pulse" : ""
-                          }`}
-                        >
+                        <Card key={delivery.id} className="p-3 hover:shadow-md transition-shadow">
                           <div className="space-y-2">
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
@@ -711,7 +700,6 @@ export default function DelivererPage() {
                                   onClick={() => deleteDelivery(delivery.id)}
                                   title="Remover entrega"
                                   className="hover:bg-red-50 hover:text-red-600"
-                                  disabled={delivery.isSyncing}
                                 >
                                   ×
                                 </Button>
@@ -719,13 +707,14 @@ export default function DelivererPage() {
                             </div>
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <Badge className={deliveryType?.color}>{deliveryType?.label}</Badge>
+                                {deliveryType && (
+                                  <Badge className={deliveryType.color}>
+                                    {deliveryType.label}
+                                  </Badge>
+                                )}
                                 <div className="flex items-center gap-1">
                                   <Clock className="h-3 w-3" />
-                                  {deliveryTime.toLocaleTimeString("pt-BR", {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}
+                                  <span>{delivery.displayed_time}</span>
                                   <span>•</span>
                                   <span>
                                     {hoursDiff < 1
@@ -737,13 +726,17 @@ export default function DelivererPage() {
                                   <>
                                     <span>•</span>
                                     <Navigation className="h-3 w-3" />
-                                    {delivery.round_trip_km.toFixed(1)}km
+                                    {delivery.round_trip_km.toFixed(1)} km
                                   </>
                                 )}
                               </div>
                               <div className="text-right">
-                                <p className="text-sm font-medium">R$ {delivery.order_value.toFixed(2)}</p>
-                                <p className="text-xs text-green-600">+R$ {delivery.delivery_fee.toFixed(2)}</p>
+                                <p className="text-sm font-medium">
+                                  R$ {delivery.order_value.toFixed(2)}
+                                </p>
+                                <p className="text-xs text-green-600">
+                                  +R$ {delivery.delivery_fee.toFixed(2)}
+                                </p>
                               </div>
                             </div>
                           </div>

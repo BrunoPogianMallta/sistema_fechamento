@@ -51,7 +51,7 @@ const DELIVERY_TYPES = [
   { value: "pix", label: "PIX", color: "bg-purple-100 text-purple-800" },
   { value: "rappi", label: "RAPPI", color: "bg-orange-100 text-white-800" },
 ]
-]
+
 
 export default function DelivererPage() {
   const params = useParams()

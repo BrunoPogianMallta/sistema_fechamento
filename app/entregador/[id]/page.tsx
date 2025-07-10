@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useRef, useMemo } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowLeft, DollarSign, Navigation, Clock, Package, LogOut, Wifi, WifiOff, Printer } from "lucide-react"
+import { ArrowLeft, DollarSign, Navigation, Clock, Package, LogOut, Wifi, WifiOff } from "lucide-react"
 import Link from "next/link"
 import { DistanceCalculator } from "@/utils/distance-calculator"
 import { AuthGuard } from "@/components/auth-guard"
@@ -40,7 +40,7 @@ interface Delivery {
   distance_km: number | null
   round_trip_km: number | null
   created_at: string
-  displayed_time?: string
+  isSyncing?: boolean
 }
 
 const DELIVERY_TYPES = [
@@ -49,7 +49,6 @@ const DELIVERY_TYPES = [
   { value: "card", label: "Cartão", color: "bg-green-100 text-green-800" },
   { value: "cash", label: "Dinheiro", color: "bg-yellow-100 text-yellow-800" },
   { value: "pix", label: "PIX", color: "bg-purple-100 text-purple-800" },
-  { value: "rappi", label: "Rappi", color: "bg-orange-100 text-purple-800" },
 ]
 
 export default function DelivererPage() {
@@ -70,55 +69,15 @@ export default function DelivererPage() {
   const [loading, setLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(true)
   const subscriptionRef = useRef<any>(null)
-  const isInitializedRef = useRef(false)
 
-  // Calcula o período do turno (18:00 até 02:30 do dia seguinte)
-  const shiftInfo = useMemo(() => {
-    const now = new Date()
-    const currentHour = now.getHours()
-    const currentMinutes = now.getMinutes()
-    
-    // Verifica se está no período de tolerância (00:00-02:30)
-    const isGracePeriod = (currentHour >= 0 && currentHour < 2) || 
-                         (currentHour === 2 && currentMinutes <= 30)
-    
-    // Data de referência (dia do turno)
-    const referenceDate = isGracePeriod ? 
-      new Date(now.getTime() - 24 * 60 * 60 * 1000) : // Volta um dia se for período de tolerância
-      now
-
-    // Calcula as datas de início e fim do turno
-    const startDate = new Date(referenceDate)
-    startDate.setHours(18, 0, 0, 0)
-    
-    const endDate = new Date(referenceDate)
-    endDate.setDate(endDate.getDate() + 1)
-    endDate.setHours(2, 30, 0, 0)
-
-    return {
-      date: referenceDate.toLocaleDateString("pt-BR", {
-        weekday: "long",
-        day: "2-digit",
-        month: "long",
-      }),
-      dateString: referenceDate.toISOString().split("T")[0],
-      startDate,
-      endDate,
-      isGracePeriod,
-      periodText: `${referenceDate.toLocaleDateString("pt-BR")} 18:00 até ${endDate.toLocaleDateString("pt-BR")} 02:30`
-    }
-  }, [])
-
-  // Busca as entregas do turno atual
-  const fetchShiftDeliveries = useCallback(async () => {
+  // Função para buscar entregas do dia
+  const fetchTodayDeliveries = useCallback(async () => {
     if (!delivererId) return
 
     try {
-      setLoading(true)
-      
-      // Formata as datas para o filtro
-      const startDate = shiftInfo.startDate.toISOString()
-      const endDate = shiftInfo.endDate.toISOString()
+      const today = new Date().toISOString().split("T")[0]
+      const startDate = `${today}T00:00:00Z`
+      const endDate = `${today}T23:59:59Z`
 
       const { data, error } = await supabase
         .from("deliveries")
@@ -128,75 +87,73 @@ export default function DelivererPage() {
         .lte("created_at", endDate)
         .order("created_at", { ascending: false })
 
-      if (error) throw error
-
-      // Adiciona o horário local formatado para exibição
-      const deliveriesWithLocalTime = data?.map(delivery => ({
-        ...delivery,
-        displayed_time: new Date(delivery.created_at).toLocaleTimeString('pt-BR', {
-          hour: '2-digit',
-          minute: '2-digit',
-          timeZone: 'America/Sao_Paulo'
-        })
-      })) || []
-
-      setDeliveries(deliveriesWithLocalTime)
-    } catch (error) {
-      console.error("Erro ao buscar entregas:", error)
-      toast({
-        title: "Erro",
-        description: "Não foi possível carregar as entregas do turno.",
-        variant: "destructive",
-      })
-    } finally {
-      setLoading(false)
-    }
-  }, [delivererId, shiftInfo, toast])
-
-  // Carrega os dados iniciais
-  useEffect(() => {
-    if (!delivererId || isInitializedRef.current) return
-
-    const loadInitialData = async () => {
-      // Carrega entregador
-      const { data: delivererData, error: delivererError } = await supabase
-        .from("deliverers")
-        .select("*")
-        .eq("id", delivererId)
-        .single()
-
-      if (delivererError || !delivererData) {
+      if (error) {
+        console.error("Erro ao buscar entregas:", error)
         toast({
           title: "Erro",
-          description: "Entregador não encontrado.",
+          description: "Não foi possível carregar entregas.",
           variant: "destructive",
         })
-        router.push("/")
         return
       }
 
-      setDeliverer(delivererData)
+      setDeliveries(prev => [
+        ...(data || []),
+        ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
+      ])
+    } catch (error) {
+      console.error("Erro inesperado:", error)
+    }
+  }, [delivererId, toast])
 
-      // Carrega bairros
-      const { data: neighborhoodsData, error: neighborhoodsError } = await supabase
-        .from("neighborhoods")
-        .select("*")
-        .order("name", { ascending: true })
+  // Carregar dados iniciais
+  useEffect(() => {
+    async function loadInitialData() {
+      if (!delivererId) return
 
-      if (!neighborhoodsError) {
-        setNeighborhoods(neighborhoodsData || [])
+      try {
+        // Carrega entregador
+        const { data: delivererData, error: delivererError } = await supabase
+          .from("deliverers")
+          .select("*")
+          .eq("id", delivererId)
+          .single()
+
+        if (delivererError || !delivererData) {
+          toast({
+            title: "Erro",
+            description: "Entregador não encontrado.",
+            variant: "destructive",
+          })
+          router.push("/")
+          return
+        }
+
+        setDeliverer(delivererData)
+
+        // Carrega bairros
+        const { data: neighborhoodsData, error: neighborhoodsError } = await supabase
+          .from("neighborhoods")
+          .select("*")
+          .order("name", { ascending: true })
+
+        if (!neighborhoodsError) {
+          setNeighborhoods(neighborhoodsData || [])
+        }
+
+        // Carrega entregas
+        await fetchTodayDeliveries()
+      } catch (error) {
+        console.error("Erro ao carregar dados iniciais:", error)
       }
-
-      isInitializedRef.current = true
-      fetchShiftDeliveries()
     }
 
     loadInitialData()
-  }, [delivererId, router, toast, fetchShiftDeliveries])
+  }, [delivererId, router, toast, fetchTodayDeliveries])
 
-  // Configura a subscription em tempo real
+  // Configurar Real-time subscriptions
   useEffect(() => {
-    if (!delivererId || subscriptionRef.current) return
+    if (!delivererId) return
 
     const channel = supabase
       .channel(`deliveries-${delivererId}`)
@@ -209,33 +166,17 @@ export default function DelivererPage() {
           filter: `deliverer_id=eq.${delivererId}`,
         },
         async (payload) => {
-          const delivery = payload.new as Delivery
-          const deliveryDate = new Date(delivery.created_at)
-          
-          // Verifica se está dentro do turno atual
-          if (deliveryDate >= shiftInfo.startDate && deliveryDate <= shiftInfo.endDate) {
-            if (payload.eventType === "INSERT") {
-              // Adiciona o horário local formatado
-              const deliveryWithLocalTime = {
-                ...delivery,
-                displayed_time: deliveryDate.toLocaleTimeString('pt-BR', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  timeZone: 'America/Sao_Paulo'
-                })
-              }
-              
-              setDeliveries(prev => [deliveryWithLocalTime, ...prev])
-              toast({
-                title: "✅ Nova entrega registrada",
-                description: `Entrega para ${delivery.neighborhood} adicionada.`,
-              })
-            } else if (payload.eventType === "DELETE") {
-              setDeliveries(prev => prev.filter(d => d.id !== payload.old.id))
-            }
+          await fetchTodayDeliveries()
+          if (payload.eventType === "INSERT") {
+            toast({
+              title: "✅ Nova entrega registrada",
+              description: `Entrega para ${payload.new?.neighborhood || "endereço"} adicionada.`,
+            })
           }
         }
       )
+      .on("presence", { event: "sync" }, () => setIsConnected(true))
+      .on("presence", { event: "leave" }, () => setIsConnected(false))
       .subscribe()
 
     subscriptionRef.current = channel
@@ -245,203 +186,152 @@ export default function DelivererPage() {
         supabase.removeChannel(subscriptionRef.current)
       }
     }
-  }, [delivererId, shiftInfo, toast])
+  }, [delivererId, fetchTodayDeliveries, toast])
 
-  // Atualiza a taxa de entrega quando muda o bairro
+  // Atualizar taxa quando bairro muda
   useEffect(() => {
-    const neighborhood = neighborhoods.find(n => n.name === selectedNeighborhood)
+    const neighborhood = neighborhoods.find((n) => n.name === selectedNeighborhood)
     setDeliveryFee(neighborhood?.delivery_fee || 0)
   }, [selectedNeighborhood, neighborhoods])
 
-  // Registra uma nova entrega
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault()
+  // Função para adicionar entrega
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
 
-      if (!formData.address || !selectedNeighborhood || !formData.deliveryType || !formData.orderValue) {
-        toast({
-          title: "Erro",
-          description: "Preencha todos os campos obrigatórios.",
-          variant: "destructive",
-        })
-        return
-      }
+    if (!formData.address || !selectedNeighborhood || !formData.deliveryType || !formData.orderValue) {
+      toast({
+        title: "Erro",
+        description: "Preencha todos os campos obrigatórios.",
+        variant: "destructive",
+      })
+      return
+    }
 
-      if (!deliverer) return
+    if (!deliverer) return
 
-      setLoading(true)
-
-      try {
-        // Calcula distância
-        const calculator = DistanceCalculator.getInstance()
-        let distanceResult = { distanceKm: 0, roundTripKm: 0 }
-
-        try {
-          distanceResult = await calculator.calculateDistance(formData.address)
-        } catch (error) {
-          console.warn("Erro no cálculo de distância:", error)
-        }
-
-        // Prepara os dados da entrega com o horário atual
-        const now = new Date()
-        const deliveryData = {
-          deliverer_id: deliverer.id,
-          deliverer_name: deliverer.name,
-          address: formData.address,
-          neighborhood: selectedNeighborhood,
-          delivery_type: formData.deliveryType,
-          order_value: Number(formData.orderValue),
-          delivery_fee: deliveryFee,
-          distance_km: distanceResult.distanceKm,
-          round_trip_km: distanceResult.roundTripKm,
-          created_at: now.toISOString() // Armazena como UTC
-        }
-
-        // Insere no banco de dados
-        const { error } = await supabase.from("deliveries").insert([deliveryData])
-
-        if (error) throw error
-
-        // Limpa o formulário
-        setFormData({ address: "", deliveryType: "", orderValue: "" })
-        setSelectedNeighborhood("")
-
-        toast({
-          title: "✅ Sucesso",
-          description: "Entrega registrada com sucesso!",
-        })
-      } catch (error) {
-        console.error("Erro ao registrar entrega:", error)
-        toast({
-          title: "Erro",
-          description: "Falha ao registrar entrega. Tente novamente.",
-          variant: "destructive",
-        })
-      } finally {
-        setLoading(false)
-      }
-    },
-    [formData, selectedNeighborhood, deliveryFee, deliverer, toast]
-  )
-
-  // Remove uma entrega
-  const deleteDelivery = useCallback(
-    async (deliveryId: string) => {
-      if (!confirm("Tem certeza que deseja remover esta entrega?")) return
+    setLoading(true)
+    
+    try {
+      // Calcular distância
+      const calculator = DistanceCalculator.getInstance()
+      let distanceResult = { distanceKm: 0, roundTripKm: 0 }
 
       try {
-        const { error } = await supabase.from("deliveries").delete().eq("id", deliveryId)
-        if (error) throw error
-
-        toast({
-          title: "Sucesso",
-          description: "Entrega removida com sucesso.",
-        })
+        distanceResult = await calculator.calculateDistance(formData.address)
       } catch (error) {
-        console.error("Erro ao remover entrega:", error)
-        toast({
-          title: "Erro",
-          description: "Falha ao remover entrega.",
-          variant: "destructive",
-        })
+        console.warn("⚠️ Falha no cálculo de distância:", error)
       }
-    },
-    [toast]
-  )
 
-  // Navega para o endereço no Google Maps
-  const navigateToAddress = useCallback((address: string) => {
-    const encodedAddress = encodeURIComponent(address)
-    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodedAddress}`, "_blank")
-  }, [])
+      // Criar objeto de entrega temporário
+      const tempDelivery: Delivery = {
+        id: `temp-${Date.now()}`,
+        deliverer_id: deliverer.id,
+        deliverer_name: deliverer.name,
+        address: formData.address,
+        neighborhood: selectedNeighborhood,
+        delivery_type: formData.deliveryType,
+        order_value: Number(formData.orderValue),
+        delivery_fee: deliveryFee,
+        distance_km: distanceResult.distanceKm,
+        round_trip_km: distanceResult.roundTripKm,
+        created_at: new Date().toISOString(),
+        isSyncing: true
+      }
 
-  // Faz logout do sistema
-  const handleLogout = useCallback(() => {
+      // Adicionar imediatamente ao estado local
+      setDeliveries(prev => [tempDelivery, ...prev])
+
+      // Limpar formulário
+      setFormData({ address: "", deliveryType: "", orderValue: "" })
+      setSelectedNeighborhood("")
+
+      // Inserir no banco de dados
+      const { data, error } = await supabase
+        .from("deliveries")
+        .insert([
+          {
+            deliverer_id: deliverer.id,
+            deliverer_name: deliverer.name,
+            address: formData.address,
+            neighborhood: selectedNeighborhood,
+            delivery_type: formData.deliveryType,
+            order_value: Number(formData.orderValue),
+            delivery_fee: deliveryFee,
+            distance_km: distanceResult.distanceKm,
+            round_trip_km: distanceResult.roundTripKm,
+          },
+        ])
+        .select()
+        .single()
+
+      if (error) throw error
+
+      // Atualizar a entrega local com o ID real
+      setDeliveries(prev => 
+        prev.map(d => 
+          d.id === tempDelivery.id 
+            ? { ...data, isSyncing: false } 
+            : d
+        )
+      )
+
+      toast({
+        title: "✅ Sucesso",
+        description: "Entrega registrada com sucesso!",
+      })
+
+    } catch (error) {
+      console.error("Erro ao registrar entrega:", error)
+      setDeliveries(prev => prev.filter(d => d.id !== `temp-${Date.now()}`))
+      toast({
+        title: "Erro",
+        description: "Falha ao registrar entrega.",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Função para deletar entrega
+  const deleteDelivery = async (deliveryId: string) => {
+    if (!confirm("Tem certeza que deseja remover esta entrega?")) return
+
+    try {
+      setDeliveries(prev => prev.filter(d => d.id !== deliveryId))
+      const { error } = await supabase.from("deliveries").delete().eq("id", deliveryId)
+      if (error) throw error
+    } catch (error) {
+      console.error("Erro ao deletar entrega:", error)
+      fetchTodayDeliveries()
+      toast({
+        title: "Erro",
+        description: "Falha ao remover entrega.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Função para navegar até o endereço
+  const navigateToAddress = (address: string) => {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`, "_blank")
+  }
+
+  // Função para logout
+  const handleLogout = () => {
     localStorage.removeItem("userType")
     localStorage.removeItem("userId")
     localStorage.removeItem("userName")
     router.push("/")
-  }, [router])
+  }
 
-  // Gera relatório impresso
-  const handlePrintReport = useCallback(() => {
-    const printContent = `
-      <html>
-        <head>
-          <title>Relatório de Turno - ${shiftInfo.periodText}</title>
-          <style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            h1 { color: #333; text-align: center; }
-            .header { margin-bottom: 20px; text-align: center; }
-            .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 20px; }
-            .stat-card { border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
-            .deliveries { margin-top: 20px; }
-            .delivery-item { border-bottom: 1px solid #eee; padding: 10px 0; }
-            .total { font-weight: bold; margin-top: 20px; text-align: right; }
-            .delivery-type { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; }
-          </style>
-        </head>
-        <body>
-          <h1>Relatório de Turno</h1>
-          <div class="header">
-            <p><strong>Período:</strong> ${shiftInfo.periodText}</p>
-            <p><strong>Entregador:</strong> ${deliverer?.name || ""}</p>
-            <p><small>(Tolerância até 02:30 para lançamentos)</small></p>
-          </div>
-          
-          <div class="stats">
-            <div class="stat-card"><strong>Total de Entregas:</strong> ${deliveries.length}</div>
-            <div class="stat-card"><strong>Valor em Pedidos:</strong> R$ ${deliveries.reduce((sum, d) => sum + d.order_value, 0).toFixed(2)}</div>
-            <div class="stat-card"><strong>Total em Taxas:</strong> R$ ${deliveries.reduce((sum, d) => sum + d.delivery_fee, 0).toFixed(2)}</div>
-            <div class="stat-card"><strong>Km Rodados:</strong> ${deliveries.reduce((sum, d) => sum + (d.round_trip_km || 0), 0).toFixed(1)} km</div>
-          </div>
-          
-          <div class="deliveries">
-            <h3>Detalhes das Entregas:</h3>
-            ${deliveries.map(d => {
-              const type = DELIVERY_TYPES.find(t => t.value === d.delivery_type)
-              return `
-                <div class="delivery-item">
-                  <p>
-                    <strong>${d.displayed_time || new Date(d.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</strong> - 
-                    ${d.neighborhood} | 
-                    <span class="delivery-type" style="background-color: ${type?.color.split(' ')[0]}; color: ${type?.color.split(' ')[2]}">
-                      ${type?.label || d.delivery_type}
-                    </span>
-                  </p>
-                  <p>Endereço: ${d.address}</p>
-                  <p>
-                    Pedido: R$ ${d.order_value.toFixed(2)} | 
-                    Taxa: R$ ${d.delivery_fee.toFixed(2)} | 
-                    ${d.round_trip_km ? `Distância: ${d.round_trip_km.toFixed(1)} km` : ''}
-                  </p>
-                </div>
-              `
-            }).join('')}
-          </div>
-          
-          <div class="total">
-            <p>Total Geral: R$ ${(deliveries.reduce((sum, d) => sum + d.order_value + d.delivery_fee, 0).toFixed(2))}</p>
-          </div>
-        </body>
-      </html>
-    `
-
-    const printWindow = window.open("", "_blank")
-    printWindow?.document.write(printContent)
-    printWindow?.document.close()
-    setTimeout(() => {
-      printWindow?.print()
-    }, 200)
-  }, [deliverer, deliveries, shiftInfo])
-
-  // Calcula as estatísticas do turno
-  const shiftStats = useMemo(() => ({
+  // Estatísticas do dia
+  const todayStats = {
     total: deliveries.length,
     totalFees: deliveries.reduce((sum, d) => sum + d.delivery_fee, 0),
     totalValue: deliveries.reduce((sum, d) => sum + d.order_value, 0),
     totalKm: deliveries.reduce((sum, d) => sum + (d.round_trip_km || 0), 0),
-  }), [deliveries])
+  }
 
   if (!deliverer) {
     return (
@@ -462,8 +352,8 @@ export default function DelivererPage() {
     <AuthGuard allowedUserTypes={["restaurant", "deliverer"]} delivererId={delivererId}>
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-4">
         <div className="max-w-6xl mx-auto">
-          {/* Cabeçalho */}
-          <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <Link href="/">
                 <Button variant="outline" size="sm">
@@ -476,85 +366,73 @@ export default function DelivererPage() {
                 Sair
               </Button>
             </div>
-
+            
             <div className="text-center">
-              <h1 className="text-2xl font-bold text-gray-900">Relatório de Turno</h1>
-              <p className="text-gray-600">{shiftInfo.periodText}</p>
-              <p className="text-sm text-gray-500">(Tolerância até 02:30 para lançamentos)</p>
+              <h1 className="text-2xl font-bold text-gray-900">Painel do Entregador</h1>
+              <p className="text-gray-600">{deliverer.name}</p>
             </div>
-
-            <div className="flex items-center gap-4">
-              <Button 
-                onClick={handlePrintReport} 
-                variant="outline" 
-                className="bg-white hover:bg-gray-50"
-                disabled={deliveries.length === 0}
-              >
-                <Printer className="h-4 w-4 mr-2" />
-                Imprimir
-              </Button>
-              <div className="flex items-center gap-2">
-                {isConnected ? (
-                  <>
-                    <Wifi className="h-4 w-4 text-green-600" />
-                    <span className="text-sm text-green-600">Online</span>
-                  </>
-                ) : (
-                  <>
-                    <WifiOff className="h-4 w-4 text-red-600" />
-                    <span className="text-sm text-red-600">Offline</span>
-                  </>
-                )}
-              </div>
+            
+            <div className="flex items-center gap-2">
+              {isConnected ? (
+                <>
+                  <Wifi className="h-4 w-4 text-green-600" />
+                  <span className="text-sm text-green-600">Online</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="h-4 w-4 text-red-600" />
+                  <span className="text-sm text-red-600">Offline</span>
+                </>
+              )}
             </div>
           </div>
 
           {/* Estatísticas */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <Card className="hover:shadow-lg transition-shadow">
+            <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Entregas</CardTitle>
+                <CardTitle className="text-sm font-medium">Entregas Hoje</CardTitle>
                 <Package className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{shiftStats.total}</div>
+                <div className="text-2xl font-bold">{todayStats.total}</div>
               </CardContent>
             </Card>
-
-            <Card className="hover:shadow-lg transition-shadow">
+            
+            <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Taxas</CardTitle>
+                <CardTitle className="text-sm font-medium">Total em Taxas</CardTitle>
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-green-600">R$ {shiftStats.totalFees.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-green-600">R$ {todayStats.totalFees.toFixed(2)}</div>
               </CardContent>
             </Card>
-
-            <Card className="hover:shadow-lg transition-shadow">
+            
+            <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium">Valor Pedidos</CardTitle>
+                <CardTitle className="text-sm font-medium">Valor Total</CardTitle>
                 <DollarSign className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-blue-600">R$ {shiftStats.totalValue.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-blue-600">R$ {todayStats.totalValue.toFixed(2)}</div>
               </CardContent>
             </Card>
-
-            <Card className="hover:shadow-lg transition-shadow">
+            
+            <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium">Km Rodados</CardTitle>
                 <Navigation className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-orange-600">{shiftStats.totalKm.toFixed(1)} km</div>
+                <div className="text-2xl font-bold text-orange-600">{todayStats.totalKm.toFixed(1)} km</div>
               </CardContent>
             </Card>
           </div>
 
           {/* Corpo principal */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Formulário de nova entrega */}
+            {/* Formulário de Nova Entrega */}
             <Card>
               <CardHeader>
                 <CardTitle>Nova Entrega</CardTitle>
@@ -585,7 +463,7 @@ export default function DelivererPage() {
                         <SelectValue placeholder="Selecione o bairro" />
                       </SelectTrigger>
                       <SelectContent>
-                        {neighborhoods.map(n => (
+                        {neighborhoods.map((n) => (
                           <SelectItem key={n.id} value={n.name}>
                             <div className="flex items-center justify-between w-full">
                               <span>{n.name}</span>
@@ -603,7 +481,7 @@ export default function DelivererPage() {
                     <Label htmlFor="deliveryType">Tipo de Entrega *</Label>
                     <Select
                       value={formData.deliveryType}
-                      onValueChange={value => setFormData({ ...formData, deliveryType: value })}
+                      onValueChange={(value) => setFormData({ ...formData, deliveryType: value })}
                       required
                       disabled={loading}
                     >
@@ -611,7 +489,7 @@ export default function DelivererPage() {
                         <SelectValue placeholder="Selecione o tipo" />
                       </SelectTrigger>
                       <SelectContent>
-                        {DELIVERY_TYPES.map(type => (
+                        {DELIVERY_TYPES.map((type) => (
                           <SelectItem key={type.value} value={type.value}>
                             {type.label}
                           </SelectItem>
@@ -628,7 +506,7 @@ export default function DelivererPage() {
                       step="0.01"
                       min="0"
                       value={formData.orderValue}
-                      onChange={e => setFormData({ ...formData, orderValue: e.target.value })}
+                      onChange={(e) => setFormData({ ...formData, orderValue: e.target.value })}
                       placeholder="0,00"
                       required
                       disabled={loading}
@@ -647,18 +525,18 @@ export default function DelivererPage() {
                     </Card>
                   </div>
 
-                  <Button type="submit" className="w-full" size="lg" disabled={loading}>
+                  <Button type="submit" className="w-full" size="lg" disabled={loading || !isConnected}>
                     {loading ? "Registrando..." : "Registrar Entrega"}
                   </Button>
                 </form>
               </CardContent>
             </Card>
 
-            {/* Lista de entregas */}
+            {/* Lista de Entregas */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center justify-between">
-                  <span>Entregas do Turno</span>
+                  <span>Entregas de Hoje</span>
                   <Badge variant="secondary">{deliveries.length}</Badge>
                 </CardTitle>
               </CardHeader>
@@ -667,18 +545,22 @@ export default function DelivererPage() {
                   {deliveries.length === 0 ? (
                     <div className="text-center text-muted-foreground py-8">
                       <Package className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p>Nenhuma entrega registrada no turno</p>
-                      <p className="text-sm">{shiftInfo.periodText}</p>
+                      <p>Nenhuma entrega registrada hoje</p>
                     </div>
                   ) : (
-                    deliveries.map(delivery => {
-                      const deliveryType = DELIVERY_TYPES.find(t => t.value === delivery.delivery_type)
+                    deliveries.map((delivery) => {
+                      const deliveryType = DELIVERY_TYPES.find((t) => t.value === delivery.delivery_type)
                       const deliveryTime = new Date(delivery.created_at)
                       const now = new Date()
                       const hoursDiff = (now.getTime() - deliveryTime.getTime()) / (1000 * 60 * 60)
 
                       return (
-                        <Card key={delivery.id} className="p-3 hover:shadow-md transition-shadow">
+                        <Card 
+                          key={delivery.id}
+                          className={`p-3 hover:shadow-md transition-shadow ${
+                            delivery.isSyncing ? "opacity-70 bg-gray-50 animate-pulse" : ""
+                          }`}
+                        >
                           <div className="space-y-2">
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
@@ -700,6 +582,7 @@ export default function DelivererPage() {
                                   onClick={() => deleteDelivery(delivery.id)}
                                   title="Remover entrega"
                                   className="hover:bg-red-50 hover:text-red-600"
+                                  disabled={delivery.isSyncing}
                                 >
                                   ×
                                 </Button>
@@ -714,7 +597,12 @@ export default function DelivererPage() {
                                 )}
                                 <div className="flex items-center gap-1">
                                   <Clock className="h-3 w-3" />
-                                  <span>{delivery.displayed_time}</span>
+                                  <span>
+                                    {deliveryTime.toLocaleTimeString("pt-BR", {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                  </span>
                                   <span>•</span>
                                   <span>
                                     {hoursDiff < 1

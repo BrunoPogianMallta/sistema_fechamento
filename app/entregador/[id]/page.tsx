@@ -49,6 +49,8 @@ const DELIVERY_TYPES = [
   { value: "card", label: "Cartão", color: "bg-green-100 text-green-800" },
   { value: "cash", label: "Dinheiro", color: "bg-yellow-100 text-yellow-800" },
   { value: "pix", label: "PIX", color: "bg-purple-100 text-purple-800" },
+  { value: "rappi", label: "RAPPI", color: "bg-orange-100 text-white-800" },
+]
 ]
 
 export default function DelivererPage() {

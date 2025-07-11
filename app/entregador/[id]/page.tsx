@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowLeft, DollarSign, Navigation, Clock, Package, LogOut, Wifi, WifiOff } from "lucide-react"
+import { ArrowLeft, DollarSign, Navigation, Clock, Package, LogOut, Wifi, WifiOff, Edit, Save, X } from "lucide-react"
 import Link from "next/link"
 import { DistanceCalculator } from "@/utils/distance-calculator"
 import { AuthGuard } from "@/components/auth-guard"
@@ -52,7 +52,6 @@ const DELIVERY_TYPES = [
   { value: "rappi", label: "RAPPI", color: "bg-orange-100 text-white-800" },
 ]
 
-
 export default function DelivererPage() {
   const params = useParams()
   const router = useRouter()
@@ -71,54 +70,50 @@ export default function DelivererPage() {
   const [loading, setLoading] = useState(false)
   const [isConnected, setIsConnected] = useState(true)
   const subscriptionRef = useRef<any>(null)
+  const [editingDelivery, setEditingDelivery] = useState<Delivery | null>(null)
+  const addressAutocompleteRef = useRef<any>(null)
 
   // Função para buscar entregas do dia
   const fetchTodayDeliveries = useCallback(async () => {
-  if (!delivererId) return;
+    if (!delivererId) return
 
-  try {
-    const now = new Date();
+    try {
+      const now = new Date()
+      const start = new Date(now)
+      start.setHours(0, 0, 0, 0)
+      const end = new Date(start)
+      end.setHours(23, 59, 59, 999)
 
-    // Define início e fim do dia local (meia-noite até 23:59:59.999)
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
+      const timezoneOffset = start.getTimezoneOffset()
+      const startUTC = new Date(start.getTime() - timezoneOffset * 60 * 1000)
+      const endUTC = new Date(end.getTime() - timezoneOffset * 60 * 1000)
 
-    const end = new Date(start);
-    end.setHours(23, 59, 59, 999);
+      const { data, error } = await supabase
+        .from("deliveries")
+        .select("*")
+        .eq("deliverer_id", delivererId)
+        .gte("created_at", startUTC.toISOString())
+        .lte("created_at", endUTC.toISOString())
+        .order("created_at", { ascending: false })
 
-    // Converte para UTC ajustando o fuso horário local
-    const timezoneOffset = start.getTimezoneOffset(); // em minutos
-    const startUTC = new Date(start.getTime() + timezoneOffset * 60 * 1000);
-    const endUTC = new Date(end.getTime() + timezoneOffset * 60 * 1000);
+      if (error) {
+        console.error("Erro ao buscar entregas:", error)
+        toast({
+          title: "Erro",
+          description: "Não foi possível carregar entregas.",
+          variant: "destructive",
+        })
+        return
+      }
 
-    const { data, error } = await supabase
-      .from("deliveries")
-      .select("*")
-      .eq("deliverer_id", delivererId)
-      .gte("created_at", startUTC.toISOString())
-      .lte("created_at", endUTC.toISOString())
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("Erro ao buscar entregas:", error);
-      toast({
-        title: "Erro",
-        description: "Não foi possível carregar entregas.",
-        variant: "destructive",
-      });
-      return;
+      setDeliveries(prev => [
+        ...(data || []),
+        ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
+      ])
+    } catch (error) {
+      console.error("Erro inesperado:", error)
     }
-
-    // Junta com entregas em sync que ainda não vieram do banco
-    setDeliveries(prev => [
-      ...(data || []),
-      ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
-    ]);
-  } catch (error) {
-    console.error("Erro inesperado:", error);
-  }
-}, [delivererId, toast]);
-
+  }, [delivererId, toast])
 
   // Carregar dados iniciais
   useEffect(() => {
@@ -208,6 +203,14 @@ export default function DelivererPage() {
     setDeliveryFee(neighborhood?.delivery_fee || 0)
   }, [selectedNeighborhood, neighborhoods])
 
+  // Limpar campo de endereço
+  const clearAddressField = () => {
+    setFormData(prev => ({ ...prev, address: "" }))
+    if (addressAutocompleteRef.current) {
+      addressAutocompleteRef.current.clear()
+    }
+  }
+
   // Função para adicionar entrega
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -258,6 +261,7 @@ export default function DelivererPage() {
       // Limpar formulário
       setFormData({ address: "", deliveryType: "", orderValue: "" })
       setSelectedNeighborhood("")
+      clearAddressField()
 
       // Inserir no banco de dados
       const { data, error } = await supabase
@@ -307,6 +311,124 @@ export default function DelivererPage() {
     }
   }
 
+  // Função para editar entrega
+  const startEditing = (delivery: Delivery) => {
+    setEditingDelivery(delivery)
+    setFormData({
+      address: delivery.address,
+      deliveryType: delivery.delivery_type,
+      orderValue: delivery.order_value.toString(),
+    })
+    setSelectedNeighborhood(delivery.neighborhood)
+  }
+
+  const cancelEditing = () => {
+    setEditingDelivery(null)
+    setFormData({ address: "", deliveryType: "", orderValue: "" })
+    setSelectedNeighborhood("")
+    clearAddressField()
+  }
+
+  const saveEdit = async () => {
+    if (!editingDelivery) return
+    if (!formData.address || !selectedNeighborhood || !formData.deliveryType || !formData.orderValue) {
+      toast({
+        title: "Erro",
+        description: "Preencha todos os campos obrigatórios.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      setLoading(true)
+      
+      // Calcular distância se o endereço mudou
+      let distanceResult = { 
+        distanceKm: editingDelivery.distance_km || 0, 
+        roundTripKm: editingDelivery.round_trip_km || 0 
+      }
+
+      if (formData.address !== editingDelivery.address) {
+        const calculator = DistanceCalculator.getInstance()
+        try {
+          distanceResult = await calculator.calculateDistance(formData.address)
+        } catch (error) {
+          console.warn("⚠️ Falha no cálculo de distância:", error)
+        }
+      }
+
+      // Atualizar localmente primeiro para feedback imediato
+      setDeliveries(prev => 
+        prev.map(d => 
+          d.id === editingDelivery.id 
+            ? { 
+                ...d, 
+                address: formData.address,
+                neighborhood: selectedNeighborhood,
+                delivery_type: formData.deliveryType,
+                order_value: Number(formData.orderValue),
+                delivery_fee: deliveryFee,
+                distance_km: distanceResult.distanceKm,
+                round_trip_km: distanceResult.roundTripKm,
+                isSyncing: true
+              } 
+            : d
+        )
+      )
+
+      // Atualizar no banco de dados
+      const { error } = await supabase
+        .from("deliveries")
+        .update({
+          address: formData.address,
+          neighborhood: selectedNeighborhood,
+          delivery_type: formData.deliveryType,
+          order_value: Number(formData.orderValue),
+          delivery_fee: deliveryFee,
+          distance_km: distanceResult.distanceKm,
+          round_trip_km: distanceResult.roundTripKm,
+        })
+        .eq("id", editingDelivery.id)
+
+      if (error) throw error
+
+      // Atualizar estado local após sucesso no banco
+      setDeliveries(prev => 
+        prev.map(d => 
+          d.id === editingDelivery.id 
+            ? { 
+                ...d, 
+                isSyncing: false 
+              } 
+            : d
+        )
+      )
+
+      toast({
+        title: "✅ Sucesso",
+        description: "Entrega atualizada com sucesso!",
+      })
+
+      // Limpar formulário
+      setEditingDelivery(null)
+      setFormData({ address: "", deliveryType: "", orderValue: "" })
+      setSelectedNeighborhood("")
+      clearAddressField()
+
+    } catch (error) {
+      console.error("Erro ao atualizar entrega:", error)
+      fetchTodayDeliveries() // Recarregar dados do banco para garantir consistência
+      toast({
+        title: "Erro",
+        description: "Falha ao atualizar entrega.",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // Função para deletar entrega
   const deleteDelivery = async (deliveryId: string) => {
     if (!confirm("Tem certeza que deseja remover esta entrega?")) return
@@ -315,6 +437,10 @@ export default function DelivererPage() {
       setDeliveries(prev => prev.filter(d => d.id !== deliveryId))
       const { error } = await supabase.from("deliveries").delete().eq("id", deliveryId)
       if (error) throw error
+      toast({
+        title: "✅ Sucesso",
+        description: "Entrega removida com sucesso!",
+      })
     } catch (error) {
       console.error("Erro ao deletar entrega:", error)
       fetchTodayDeliveries()
@@ -446,20 +572,24 @@ export default function DelivererPage() {
 
           {/* Corpo principal */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Formulário de Nova Entrega */}
+            {/* Formulário de Nova Entrega/Edição */}
             <Card>
               <CardHeader>
-                <CardTitle>Nova Entrega</CardTitle>
+                <CardTitle>
+                  {editingDelivery ? "Editar Entrega" : "Nova Entrega"}
+                </CardTitle>
               </CardHeader>
               <CardContent>
-                <form onSubmit={handleSubmit} className="space-y-4">
+                <form onSubmit={editingDelivery ? (e) => { e.preventDefault(); saveEdit() } : handleSubmit} className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="address">Endereço Completo *</Label>
                     <AddressAutocomplete
+                      ref={addressAutocompleteRef}
                       onSelect={(address, neighborhood) => {
                         setFormData(prev => ({ ...prev, address }))
                         setSelectedNeighborhood(neighborhood)
                       }}
+                      initialValue={editingDelivery?.address || ""}
                       disabled={loading}
                       availableNeighborhoods={neighborhoods.map(n => n.name)}
                     />
@@ -539,9 +669,47 @@ export default function DelivererPage() {
                     </Card>
                   </div>
 
-                  <Button type="submit" className="w-full" size="lg" disabled={loading || !isConnected}>
-                    {loading ? "Registrando..." : "Registrar Entrega"}
-                  </Button>
+                  <div className="flex gap-2">
+                    {editingDelivery ? (
+                      <>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full"
+                          size="lg"
+                          onClick={cancelEditing}
+                          disabled={loading}
+                        >
+                          <X className="h-4 w-4 mr-2" />
+                          Cancelar
+                        </Button>
+                        <Button
+                          type="submit"
+                          className="w-full"
+                          size="lg"
+                          disabled={loading || !isConnected}
+                        >
+                          {loading ? (
+                            "Salvando..."
+                          ) : (
+                            <>
+                              <Save className="h-4 w-4 mr-2" />
+                              Salvar
+                            </>
+                          )}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        size="lg"
+                        disabled={loading || !isConnected}
+                      >
+                        {loading ? "Registrando..." : "Registrar Entrega"}
+                      </Button>
+                    )}
+                  </div>
                 </form>
               </CardContent>
             </Card>
@@ -582,6 +750,16 @@ export default function DelivererPage() {
                                 <p className="text-xs text-muted-foreground">{delivery.neighborhood}</p>
                               </div>
                               <div className="flex gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => startEditing(delivery)}
+                                  title="Editar entrega"
+                                  className="hover:bg-blue-50 hover:text-blue-600"
+                                  disabled={delivery.isSyncing}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
                                 <Button
                                   variant="ghost"
                                   size="sm"

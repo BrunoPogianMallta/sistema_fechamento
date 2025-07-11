@@ -144,9 +144,9 @@ export default function FechamentoPage() {
 
       // Ajustar datas para exibição
       const adjustedDeliveries = data?.map(delivery => {
-        const deliveryDate = new Date(delivery.created_at)
-        // Ajuste para fuso horário local
-        deliveryDate.setMinutes(deliveryDate.getMinutes() - deliveryDate.getTimezoneOffset())
+  const deliveryDate = new Date(delivery.created_at)
+  deliveryDate.setHours(deliveryDate.getHours() + 3) // Ajuste para UTC-3
+
         return {
           ...delivery,
           created_at: deliveryDate.toISOString(),

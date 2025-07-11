@@ -74,39 +74,52 @@ export default function DelivererPage() {
 
   // Função para buscar entregas do dia
   const fetchTodayDeliveries = useCallback(async () => {
-    if (!delivererId) return
+  const fetchTodayDeliveries = useCallback(async () => {
+  if (!delivererId) return;
 
-    try {
-      const today = new Date().toISOString().split("T")[0]
-      const startDate = `${today}T00:00:00Z`
-      const endDate = `${today}T23:59:59Z`
+  try {
+    const now = new Date();
 
-      const { data, error } = await supabase
-        .from("deliveries")
-        .select("*")
-        .eq("deliverer_id", delivererId)
-        .gte("created_at", startDate)
-        .lte("created_at", endDate)
-        .order("created_at", { ascending: false })
+    // Define início e fim do dia local (meia-noite até 23:59:59.999)
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
 
-      if (error) {
-        console.error("Erro ao buscar entregas:", error)
-        toast({
-          title: "Erro",
-          description: "Não foi possível carregar entregas.",
-          variant: "destructive",
-        })
-        return
-      }
+    const end = new Date(start);
+    end.setHours(23, 59, 59, 999);
 
-      setDeliveries(prev => [
-        ...(data || []),
-        ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
-      ])
-    } catch (error) {
-      console.error("Erro inesperado:", error)
+    // Converte para UTC ajustando o fuso horário local
+    const timezoneOffset = start.getTimezoneOffset(); // em minutos
+    const startUTC = new Date(start.getTime() + timezoneOffset * 60 * 1000);
+    const endUTC = new Date(end.getTime() + timezoneOffset * 60 * 1000);
+
+    const { data, error } = await supabase
+      .from("deliveries")
+      .select("*")
+      .eq("deliverer_id", delivererId)
+      .gte("created_at", startUTC.toISOString())
+      .lte("created_at", endUTC.toISOString())
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Erro ao buscar entregas:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar entregas.",
+        variant: "destructive",
+      });
+      return;
     }
-  }, [delivererId, toast])
+
+    // Junta com entregas em sync que ainda não vieram do banco
+    setDeliveries(prev => [
+      ...(data || []),
+      ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
+    ]);
+  } catch (error) {
+    console.error("Erro inesperado:", error);
+  }
+}, [delivererId, toast]);
+
 
   // Carregar dados iniciais
   useEffect(() => {

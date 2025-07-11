@@ -74,7 +74,6 @@ export default function DelivererPage() {
 
   // Função para buscar entregas do dia
   const fetchTodayDeliveries = useCallback(async () => {
-  const fetchTodayDeliveries = useCallback(async () => {
   if (!delivererId) return;
 
   try {

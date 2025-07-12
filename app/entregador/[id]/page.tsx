@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowLeft, DollarSign, Navigation, Clock, Package, LogOut, Wifi, WifiOff, Edit, Save, X } from "lucide-react"
+import { ArrowLeft, DollarSign, Navigation, Clock, Package, LogOut, Wifi, WifiOff, Edit, Save, X, Route, Map } from "lucide-react"
 import Link from "next/link"
 import { DistanceCalculator } from "@/utils/distance-calculator"
 import { AuthGuard } from "@/components/auth-guard"
@@ -43,6 +43,18 @@ interface Delivery {
   isSyncing?: boolean
 }
 
+interface RouteResult {
+  totalDistanceKm: number
+  optimizedOrder: number[]
+  duration: string
+  legs: Array<{
+    distance: string
+    duration: string
+    startAddress: string
+    endAddress: string
+  }>
+}
+
 const DELIVERY_TYPES = [
   { value: "ifood", label: "iFood", color: "bg-red-100 text-red-800" },
   { value: "app", label: "App Próprio", color: "bg-blue-100 text-blue-800" },
@@ -72,8 +84,11 @@ export default function DelivererPage() {
   const subscriptionRef = useRef<any>(null)
   const [editingDelivery, setEditingDelivery] = useState<Delivery | null>(null)
   const addressAutocompleteRef = useRef<any>(null)
+  const [routePlanningMode, setRoutePlanningMode] = useState(false)
+  const [selectedForRoute, setSelectedForRoute] = useState<string[]>([])
+  const [routeResult, setRouteResult] = useState<RouteResult | null>(null)
+  const [showRouteDetails, setShowRouteDetails] = useState(false)
 
-  // Função para buscar entregas do dia
   const fetchTodayDeliveries = useCallback(async () => {
     if (!delivererId) return
 
@@ -115,13 +130,11 @@ export default function DelivererPage() {
     }
   }, [delivererId, toast])
 
-  // Carregar dados iniciais
   useEffect(() => {
     async function loadInitialData() {
       if (!delivererId) return
 
       try {
-        // Carrega entregador
         const { data: delivererData, error: delivererError } = await supabase
           .from("deliverers")
           .select("*")
@@ -140,7 +153,6 @@ export default function DelivererPage() {
 
         setDeliverer(delivererData)
 
-        // Carrega bairros
         const { data: neighborhoodsData, error: neighborhoodsError } = await supabase
           .from("neighborhoods")
           .select("*")
@@ -150,7 +162,6 @@ export default function DelivererPage() {
           setNeighborhoods(neighborhoodsData || [])
         }
 
-        // Carrega entregas
         await fetchTodayDeliveries()
       } catch (error) {
         console.error("Erro ao carregar dados iniciais:", error)
@@ -160,7 +171,6 @@ export default function DelivererPage() {
     loadInitialData()
   }, [delivererId, router, toast, fetchTodayDeliveries])
 
-  // Configurar Real-time subscriptions
   useEffect(() => {
     if (!delivererId) return
 
@@ -197,13 +207,11 @@ export default function DelivererPage() {
     }
   }, [delivererId, fetchTodayDeliveries, toast])
 
-  // Atualizar taxa quando bairro muda
   useEffect(() => {
     const neighborhood = neighborhoods.find((n) => n.name === selectedNeighborhood)
     setDeliveryFee(neighborhood?.delivery_fee || 0)
   }, [selectedNeighborhood, neighborhoods])
 
-  // Limpar campo de endereço
   const clearAddressField = () => {
     setFormData(prev => ({ ...prev, address: "" }))
     if (addressAutocompleteRef.current) {
@@ -211,7 +219,6 @@ export default function DelivererPage() {
     }
   }
 
-  // Função para adicionar entrega
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
@@ -229,7 +236,6 @@ export default function DelivererPage() {
     setLoading(true)
     
     try {
-      // Calcular distância
       const calculator = DistanceCalculator.getInstance()
       let distanceResult = { distanceKm: 0, roundTripKm: 0 }
 
@@ -239,7 +245,6 @@ export default function DelivererPage() {
         console.warn("⚠️ Falha no cálculo de distância:", error)
       }
 
-      // Criar objeto de entrega temporário
       const tempDelivery: Delivery = {
         id: `temp-${Date.now()}`,
         deliverer_id: deliverer.id,
@@ -255,15 +260,12 @@ export default function DelivererPage() {
         isSyncing: true
       }
 
-      // Adicionar imediatamente ao estado local
       setDeliveries(prev => [tempDelivery, ...prev])
 
-      // Limpar formulário
       setFormData({ address: "", deliveryType: "", orderValue: "" })
       setSelectedNeighborhood("")
       clearAddressField()
 
-      // Inserir no banco de dados
       const { data, error } = await supabase
         .from("deliveries")
         .insert([
@@ -284,7 +286,6 @@ export default function DelivererPage() {
 
       if (error) throw error
 
-      // Atualizar a entrega local com o ID real
       setDeliveries(prev => 
         prev.map(d => 
           d.id === tempDelivery.id 
@@ -311,7 +312,6 @@ export default function DelivererPage() {
     }
   }
 
-  // Função para editar entrega
   const startEditing = (delivery: Delivery) => {
     setEditingDelivery(delivery)
     setFormData({
@@ -343,7 +343,6 @@ export default function DelivererPage() {
     try {
       setLoading(true)
       
-      // Calcular distância se o endereço mudou
       let distanceResult = { 
         distanceKm: editingDelivery.distance_km || 0, 
         roundTripKm: editingDelivery.round_trip_km || 0 
@@ -358,7 +357,6 @@ export default function DelivererPage() {
         }
       }
 
-      // Atualizar localmente primeiro para feedback imediato
       setDeliveries(prev => 
         prev.map(d => 
           d.id === editingDelivery.id 
@@ -377,7 +375,6 @@ export default function DelivererPage() {
         )
       )
 
-      // Atualizar no banco de dados
       const { error } = await supabase
         .from("deliveries")
         .update({
@@ -393,7 +390,6 @@ export default function DelivererPage() {
 
       if (error) throw error
 
-      // Atualizar estado local após sucesso no banco
       setDeliveries(prev => 
         prev.map(d => 
           d.id === editingDelivery.id 
@@ -410,7 +406,6 @@ export default function DelivererPage() {
         description: "Entrega atualizada com sucesso!",
       })
 
-      // Limpar formulário
       setEditingDelivery(null)
       setFormData({ address: "", deliveryType: "", orderValue: "" })
       setSelectedNeighborhood("")
@@ -418,7 +413,7 @@ export default function DelivererPage() {
 
     } catch (error) {
       console.error("Erro ao atualizar entrega:", error)
-      fetchTodayDeliveries() // Recarregar dados do banco para garantir consistência
+      fetchTodayDeliveries()
       toast({
         title: "Erro",
         description: "Falha ao atualizar entrega.",
@@ -429,7 +424,6 @@ export default function DelivererPage() {
     }
   }
 
-  // Função para deletar entrega
   const deleteDelivery = async (deliveryId: string) => {
     if (!confirm("Tem certeza que deseja remover esta entrega?")) return
 
@@ -452,12 +446,10 @@ export default function DelivererPage() {
     }
   }
 
-  // Função para navegar até o endereço
   const navigateToAddress = (address: string) => {
     window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`, "_blank")
   }
 
-  // Função para logout
   const handleLogout = () => {
     localStorage.removeItem("userType")
     localStorage.removeItem("userId")
@@ -465,7 +457,80 @@ export default function DelivererPage() {
     router.push("/")
   }
 
-  // Estatísticas do dia
+  const toggleRoutePlanningMode = () => {
+    setRoutePlanningMode(!routePlanningMode)
+    if (routePlanningMode) {
+      setSelectedForRoute([])
+      setRouteResult(null)
+      setShowRouteDetails(false)
+    }
+  }
+
+  const toggleDeliverySelection = (deliveryId: string) => {
+    setSelectedForRoute(prev => 
+      prev.includes(deliveryId)
+        ? prev.filter(id => id !== deliveryId)
+        : [...prev, deliveryId]
+    )
+  }
+
+  const calculateOptimizedRoute = async () => {
+    if (selectedForRoute.length < 2) {
+      toast({
+        title: "Atenção",
+        description: "Selecione pelo menos 2 entregas para planejar uma rota.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      setLoading(true)
+      const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
+      const addresses = selectedDeliveries.map(d => d.address)
+      
+      const calculator = DistanceCalculator.getInstance()
+      const result = await calculator.calculateRoute(addresses)
+      
+      setRouteResult(result)
+      toast({
+        title: "Rota calculada",
+        description: `Distância total: ${result.totalDistanceKm.toFixed(1)} km`,
+      })
+    } catch (error) {
+      console.error("Erro ao calcular rota:", error)
+      toast({
+        title: "Erro",
+        description: "Falha ao calcular rota otimizada.",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const navigateOptimizedRoute = () => {
+    if (!routeResult) return
+    
+    const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
+    const waypoints = routeResult.optimizedOrder.map(index => selectedDeliveries[index].address)
+    
+    const pizzariaAddress = localStorage.getItem("pizzariaConfig")
+      ? JSON.parse(localStorage.getItem("pizzariaConfig")!).address
+      : "Rua Principal, 123, Centro"
+    
+    const waypointsParam = waypoints
+      .map(addr => encodeURIComponent(addr))
+      .join("|")
+    
+    window.open(
+      `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(pizzariaAddress)}` +
+      `&destination=${encodeURIComponent(pizzariaAddress)}` +
+      `&waypoints=optimize:true|${waypointsParam}&travelmode=driving`,
+      "_blank"
+    )
+  }
+
   const todayStats = {
     total: deliveries.length,
     totalFees: deliveries.reduce((sum, d) => sum + d.delivery_fee, 0),
@@ -569,6 +634,101 @@ export default function DelivererPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Controle de Rotas */}
+          <div className="flex justify-end mb-4">
+            <Button 
+              onClick={toggleRoutePlanningMode}
+              variant={routePlanningMode ? "destructive" : "outline"}
+              className="gap-2"
+            >
+              <Route className="h-4 w-4" />
+              {routePlanningMode ? "Cancelar Planejamento" : "Planejar Rota"}
+            </Button>
+          </div>
+
+          {/* Painel de Planejamento de Rota */}
+          {routePlanningMode && (
+            <div className="mb-6 p-4 border rounded-lg bg-blue-50">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-medium">
+                  {selectedForRoute.length} entrega(s) selecionada(s)
+                </h3>
+                
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={calculateOptimizedRoute}
+                    disabled={selectedForRoute.length < 2 || loading}
+                    className="gap-2"
+                  >
+                    <Map className="h-4 w-4" />
+                    Calcular Rota
+                  </Button>
+                  
+                  {routeResult && (
+                    <Button 
+                      onClick={navigateOptimizedRoute}
+                      variant="secondary"
+                      className="gap-2"
+                    >
+                      <Navigation className="h-4 w-4" />
+                      Navegar
+                    </Button>
+                  )}
+                </div>
+              </div>
+              
+              {routeResult && (
+                <>
+                  <div className="grid grid-cols-3 gap-4 text-sm mb-4">
+                    <div>
+                      <p className="text-muted-foreground">Distância Total</p>
+                      <p className="font-medium">{routeResult.totalDistanceKm.toFixed(1)} km</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Tempo Estimado</p>
+                      <p className="font-medium">{routeResult.duration}</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Ordem Otimizada</p>
+                      <p className="font-medium">
+                        {routeResult.optimizedOrder.map(i => i + 1).join(" → ")}
+                      </p>
+                    </div>
+                  </div>
+
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setShowRouteDetails(!showRouteDetails)}
+                    className="text-blue-600 hover:text-blue-800"
+                  >
+                    {showRouteDetails ? "Ocultar detalhes" : "Mostrar detalhes da rota"}
+                  </Button>
+
+                  {showRouteDetails && (
+                    <div className="mt-4 space-y-3">
+                      {routeResult.legs.map((leg: any, index: number) => (
+                        <div key={index} className="p-3 bg-white rounded-lg shadow-sm">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <p className="font-medium text-sm">{leg.startAddress}</p>
+                              <p className="text-xs text-muted-foreground">para</p>
+                              <p className="font-medium text-sm">{leg.endAddress}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm">{leg.distance}</p>
+                              <p className="text-xs text-muted-foreground">{leg.duration}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* Corpo principal */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -739,9 +899,14 @@ export default function DelivererPage() {
                       return (
                         <Card 
                           key={delivery.id}
-                          className={`p-3 hover:shadow-md transition-shadow ${
+                          className={`p-3 hover:shadow-md transition-shadow cursor-pointer ${
                             delivery.isSyncing ? "opacity-70 bg-gray-50 animate-pulse" : ""
+                          } ${
+                            routePlanningMode && selectedForRoute.includes(delivery.id) 
+                              ? "border-2 border-blue-500 bg-blue-50" 
+                              : ""
                           }`}
+                          onClick={() => routePlanningMode && toggleDeliverySelection(delivery.id)}
                         >
                           <div className="space-y-2">
                             <div className="flex items-start justify-between">
@@ -753,7 +918,10 @@ export default function DelivererPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => startEditing(delivery)}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    startEditing(delivery)
+                                  }}
                                   title="Editar entrega"
                                   className="hover:bg-blue-50 hover:text-blue-600"
                                   disabled={delivery.isSyncing}
@@ -763,7 +931,10 @@ export default function DelivererPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => navigateToAddress(delivery.address)}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    navigateToAddress(delivery.address)
+                                  }}
                                   title="Navegar até o endereço"
                                 >
                                   <Navigation className="h-4 w-4" />
@@ -771,7 +942,10 @@ export default function DelivererPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => deleteDelivery(delivery.id)}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    deleteDelivery(delivery.id)
+                                  }}
                                   title="Remover entrega"
                                   className="hover:bg-red-50 hover:text-red-600"
                                   disabled={delivery.isSyncing}
@@ -832,4 +1006,4 @@ export default function DelivererPage() {
       </div>
     </AuthGuard>
   )
-}
+                }

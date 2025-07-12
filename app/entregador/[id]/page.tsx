@@ -465,79 +465,93 @@ export default function DelivererPage() {
   }
 
   const calculateOptimizedRoute = async () => {
-    if (selectedForRoute.length < 2) {
-      toast({
-        title: "Atenção",
-        description: "Selecione pelo menos 2 entregas para planejar uma rota.",
-        variant: "destructive",
-      })
-      return
-    }
-
-    try {
-      setLoading(true)
-      const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
-      const addresses = selectedDeliveries.map(d => d.address)
-      
-      const config = localStorage.getItem("pizzariaConfig")
-      const pizzariaAddress = config ? JSON.parse(config).address : "Rua Principal, 123, Centro"
-      
-      const calculator = DistanceCalculator.getInstance()
-      const result = await calculator.calculateRoute([pizzariaAddress, ...addresses, pizzariaAddress])
-      
-      // Ordena as entregas conforme a otimização do Google
-      const optimizedDeliveries = result.optimizedOrder.map(index => selectedDeliveries[index])
-      
-      setRouteResult({
-        ...result,
-        optimizedAddresses: optimizedDeliveries.map(d => d.address)
-      })
-
-      // Atualiza as distâncias no banco de dados
-      await Promise.all(
-        optimizedDeliveries.map(async (delivery, index) => {
-          const legDistanceKm = result.legs[index].distance.value / 1000
-          const { error } = await supabase
-            .from('deliveries')
-            .update({
-              distance_km: legDistanceKm,
-              round_trip_km: legDistanceKm * 2
-            })
-            .eq('id', delivery.id)
-          
-          if (error) throw error
-        })
-      )
-      
-      toast({
-        title: "✅ Rota calculada!",
-        description: (
-          <div>
-            <p>Distância total: {result.totalDistanceKm.toFixed(1)} km</p>
-            <p>Tempo estimado: {result.duration}</p>
-            <Button 
-              variant="link" 
-              size="sm" 
-              className="p-0 h-auto text-blue-600"
-              onClick={() => navigateOptimizedRoute()}
-            >
-              Abrir no Google Maps →
-            </Button>
-          </div>
-        ),
-      })
-
-    } catch (error) {
-      console.error("Erro ao calcular rota:", error)
-      toast({
-        title: "Erro",
-        description: "Falha ao calcular rota otimizada.",
-        variant: "destructive",
-      })
-    } finally {
-      setLoading(false)
-    }
+  console.log("Iniciando cálculo de rota...") // Debug
+  
+  if (selectedForRoute.length < 2) {
+    toast({
+      title: "Atenção",
+      description: "Selecione pelo menos 2 entregas para planejar uma rota.",
+      variant: "destructive",
+    })
+    return
   }
+
+  try {
+    setLoading(true)
+    const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
+    const addresses = selectedDeliveries.map(d => d.address)
+    
+    console.log("Endereços selecionados:", addresses) // Debug
+    
+    const config = localStorage.getItem("pizzariaConfig")
+    const pizzariaAddress = config ? JSON.parse(config).address : "Rua Principal, 123, Centro"
+    
+    console.log("Endereço da pizzaria:", pizzariaAddress) // Debug
+    
+    // Cria array com: [pizzaria, ...entregas, pizzaria]
+    const fullRoute = [pizzariaAddress, ...addresses, pizzariaAddress]
+    console.log("Rota completa:", fullRoute) // Debug
+
+    const calculator = DistanceCalculator.getInstance()
+    console.log("Instância do calculador obtida") // Debug
+    
+    const result = await calculator.calculateRoute(fullRoute)
+    console.log("Resultado da rota:", result) // Debug
+    
+    // Ordena as entregas conforme a otimização do Google
+    const optimizedDeliveries = result.optimizedOrder.map(index => selectedDeliveries[index])
+    
+    setRouteResult({
+      ...result,
+      optimizedAddresses: optimizedDeliveries.map(d => d.address)
+    })
+
+    console.log("Atualizando distâncias no banco...") // Debug
+    await Promise.all(
+      optimizedDeliveries.map(async (delivery, index) => {
+        const legDistanceKm = result.legs[index+1].distance.value / 1000 // +1 porque o primeiro trecho é da pizzaria até a primeira entrega
+        const { error } = await supabase
+          .from('deliveries')
+          .update({
+            distance_km: legDistanceKm,
+            round_trip_km: legDistanceKm * 2
+          })
+          .eq('id', delivery.id)
+        
+        if (error) {
+          console.error("Erro ao atualizar entrega:", delivery.id, error)
+          throw error
+        }
+      })
+    )
+    
+    console.log("Rota calculada com sucesso!") // Debug
+    toast({
+      title: "✅ Rota calculada!",
+      description: `Distância total: ${result.totalDistanceKm.toFixed(1)} km | Tempo: ${result.duration}`,
+      action: (
+        <Button 
+          variant="outline" 
+          size="sm"
+          onClick={navigateOptimizedRoute}
+        >
+          <Navigation className="h-4 w-4 mr-2" />
+          Abrir no Maps
+        </Button>
+      )
+    })
+
+  } catch (error: any) {
+    console.error("Erro detalhado:", error) // Debug
+    toast({
+      title: "Erro",
+      description: error.message || "Falha ao calcular rota otimizada",
+      variant: "destructive",
+    })
+  } finally {
+    setLoading(false)
+  }
+}
 
   const navigateOptimizedRoute = () => {
     if (!routeResult) return

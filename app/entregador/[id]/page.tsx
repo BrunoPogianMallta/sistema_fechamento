@@ -48,12 +48,11 @@ interface RouteResult {
   optimizedOrder: number[]
   duration: string
   legs: Array<{
-    distance: { value: number; text: string }
-    duration: { value: number; text: string }
+    distance: string
+    duration: string
     startAddress: string
     endAddress: string
   }>
-  optimizedAddresses: string[]
 }
 
 const DELIVERY_TYPES = [
@@ -100,23 +99,34 @@ export default function DelivererPage() {
       const end = new Date(start)
       end.setHours(23, 59, 59, 999)
 
+      const timezoneOffset = start.getTimezoneOffset()
+      const startUTC = new Date(start.getTime() - timezoneOffset * 60 * 1000)
+      const endUTC = new Date(end.getTime() - timezoneOffset * 60 * 1000)
+
       const { data, error } = await supabase
         .from("deliveries")
         .select("*")
         .eq("deliverer_id", delivererId)
-        .gte("created_at", start.toISOString())
-        .lte("created_at", end.toISOString())
+        .gte("created_at", startUTC.toISOString())
+        .lte("created_at", endUTC.toISOString())
         .order("created_at", { ascending: false })
 
-      if (error) throw error
-      setDeliveries(data || [])
+      if (error) {
+        console.error("Erro ao buscar entregas:", error)
+        toast({
+          title: "Erro",
+          description: "Não foi possível carregar entregas.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      setDeliveries(prev => [
+        ...(data || []),
+        ...prev.filter(d => d.isSyncing && !data?.some(dbDelivery => dbDelivery.id === d.id))
+      ])
     } catch (error) {
-      console.error("Erro ao buscar entregas:", error)
-      toast({
-        title: "Erro",
-        description: "Não foi possível carregar entregas.",
-        variant: "destructive",
-      })
+      console.error("Erro inesperado:", error)
     }
   }, [delivererId, toast])
 
@@ -465,111 +475,59 @@ export default function DelivererPage() {
   }
 
   const calculateOptimizedRoute = async () => {
-  console.log("Iniciando cálculo de rota...") // Debug
-  
-  if (selectedForRoute.length < 2) {
-    toast({
-      title: "Atenção",
-      description: "Selecione pelo menos 2 entregas para planejar uma rota.",
-      variant: "destructive",
-    })
-    return
-  }
-
-  try {
-    setLoading(true)
-    const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
-    const addresses = selectedDeliveries.map(d => d.address)
-    
-    console.log("Endereços selecionados:", addresses) // Debug
-    
-    const config = localStorage.getItem("pizzariaConfig")
-    const pizzariaAddress = config ? JSON.parse(config).address : "Rua Principal, 123, Centro"
-    
-    console.log("Endereço da pizzaria:", pizzariaAddress) // Debug
-    
-    // Cria array com: [pizzaria, ...entregas, pizzaria]
-    const fullRoute = [pizzariaAddress, ...addresses, pizzariaAddress]
-    console.log("Rota completa:", fullRoute) // Debug
-
-    const calculator = DistanceCalculator.getInstance()
-    console.log("Instância do calculador obtida") // Debug
-    
-    const result = await calculator.calculateRoute(fullRoute)
-    console.log("Resultado da rota:", result) // Debug
-    
-    // Ordena as entregas conforme a otimização do Google
-    const optimizedDeliveries = result.optimizedOrder.map(index => selectedDeliveries[index])
-    
-    setRouteResult({
-      ...result,
-      optimizedAddresses: optimizedDeliveries.map(d => d.address)
-    })
-
-    console.log("Atualizando distâncias no banco...") // Debug
-    await Promise.all(
-      optimizedDeliveries.map(async (delivery, index) => {
-        const legDistanceKm = result.legs[index+1].distance.value / 1000 // +1 porque o primeiro trecho é da pizzaria até a primeira entrega
-        const { error } = await supabase
-          .from('deliveries')
-          .update({
-            distance_km: legDistanceKm,
-            round_trip_km: legDistanceKm * 2
-          })
-          .eq('id', delivery.id)
-        
-        if (error) {
-          console.error("Erro ao atualizar entrega:", delivery.id, error)
-          throw error
-        }
+    if (selectedForRoute.length < 2) {
+      toast({
+        title: "Atenção",
+        description: "Selecione pelo menos 2 entregas para planejar uma rota.",
+        variant: "destructive",
       })
-    )
-    
-    console.log("Rota calculada com sucesso!") // Debug
-    toast({
-      title: "✅ Rota calculada!",
-      description: `Distância total: ${result.totalDistanceKm.toFixed(1)} km | Tempo: ${result.duration}`,
-      action: (
-        <Button 
-          variant="outline" 
-          size="sm"
-          onClick={navigateOptimizedRoute}
-        >
-          <Navigation className="h-4 w-4 mr-2" />
-          Abrir no Maps
-        </Button>
-      )
-    })
+      return
+    }
 
-  } catch (error: any) {
-    console.error("Erro detalhado:", error) // Debug
-    toast({
-      title: "Erro",
-      description: error.message || "Falha ao calcular rota otimizada",
-      variant: "destructive",
-    })
-  } finally {
-    setLoading(false)
+    try {
+      setLoading(true)
+      const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
+      const addresses = selectedDeliveries.map(d => d.address)
+      
+      const calculator = DistanceCalculator.getInstance()
+      const result = await calculator.calculateRoute(addresses)
+      
+      setRouteResult(result)
+      toast({
+        title: "Rota calculada",
+        description: `Distância total: ${result.totalDistanceKm.toFixed(1)} km`,
+      })
+    } catch (error) {
+      console.error("Erro ao calcular rota:", error)
+      toast({
+        title: "Erro",
+        description: "Falha ao calcular rota otimizada.",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
   }
-}
 
   const navigateOptimizedRoute = () => {
     if (!routeResult) return
     
-    const config = localStorage.getItem("pizzariaConfig")
-    const pizzariaAddress = config ? JSON.parse(config).address : "Rua Principal, 123, Centro"
+    const selectedDeliveries = deliveries.filter(d => selectedForRoute.includes(d.id))
+    const waypoints = routeResult.optimizedOrder.map(index => selectedDeliveries[index].address)
     
-    const waypoints = routeResult.optimizedAddresses
+    const pizzariaAddress = localStorage.getItem("pizzariaConfig")
+      ? JSON.parse(localStorage.getItem("pizzariaConfig")!).address
+      : "Rua Principal, 123, Centro"
+    
+    const waypointsParam = waypoints
       .map(addr => encodeURIComponent(addr))
-      .join('|')
-
+      .join("|")
+    
     window.open(
-      `https://www.google.com/maps/dir/?api=1` +
-      `&origin=${encodeURIComponent(pizzariaAddress)}` +
+      `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(pizzariaAddress)}` +
       `&destination=${encodeURIComponent(pizzariaAddress)}` +
-      `&waypoints=optimize:true|${waypoints}` +
-      `&travelmode=driving`,
-      '_blank'
+      `&waypoints=optimize:true|${waypointsParam}&travelmode=driving`,
+      "_blank"
     )
   }
 
@@ -750,7 +708,7 @@ export default function DelivererPage() {
 
                   {showRouteDetails && (
                     <div className="mt-4 space-y-3">
-                      {routeResult.legs.map((leg, index) => (
+                      {routeResult.legs.map((leg: any, index: number) => (
                         <div key={index} className="p-3 bg-white rounded-lg shadow-sm">
                           <div className="flex items-start justify-between">
                             <div>
@@ -759,8 +717,8 @@ export default function DelivererPage() {
                               <p className="font-medium text-sm">{leg.endAddress}</p>
                             </div>
                             <div className="text-right">
-                              <p className="text-sm">{leg.distance.text}</p>
-                              <p className="text-xs text-muted-foreground">{leg.duration.text}</p>
+                              <p className="text-sm">{leg.distance}</p>
+                              <p className="text-xs text-muted-foreground">{leg.duration}</p>
                             </div>
                           </div>
                         </div>
@@ -947,10 +905,6 @@ export default function DelivererPage() {
                             routePlanningMode && selectedForRoute.includes(delivery.id) 
                               ? "border-2 border-blue-500 bg-blue-50" 
                               : ""
-                          } ${
-                            routeResult?.optimizedOrder && selectedForRoute.includes(delivery.id)
-                              ? "ring-2 ring-green-500"
-                              : ""
                           }`}
                           onClick={() => routePlanningMode && toggleDeliverySelection(delivery.id)}
                         >
@@ -1052,4 +1006,4 @@ export default function DelivererPage() {
       </div>
     </AuthGuard>
   )
-                                        }
+        }

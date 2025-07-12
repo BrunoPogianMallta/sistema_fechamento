@@ -123,7 +123,7 @@ export class DistanceCalculator {
           {
             origin: pizzariaAddress,
             destination: pizzariaAddress,
-            waypoints: waypoints.map(address => ({
+            waypoints: waypoints.slice(1, -1).map(address => ({
               location: address,
               stopover: true
             })),
@@ -153,7 +153,7 @@ export class DistanceCalculator {
                 legs: legsDetails
               })
             } else {
-              reject(new Error("Não foi possível calcular a rota"))
+              reject(new Error(`Não foi possível calcular a rota: ${status}`))
             }
           }
         )
@@ -163,4 +163,4 @@ export class DistanceCalculator {
       throw error
     }
   }
-}
+          }

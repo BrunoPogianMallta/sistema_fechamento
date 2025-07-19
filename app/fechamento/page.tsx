@@ -17,7 +17,6 @@ import {
   Trash2,
   FileText,
   Download,
-  Navigation,
   LogOut,
   RefreshCw,
 } from "lucide-react"
@@ -36,8 +35,8 @@ interface Delivery {
   order_value: number
   delivery_fee: number
   created_at: string
-  round_trip_km?: number
-  distance_km?: number
+  // round_trip_km?: number // Comentado - não será mais usado
+  // distance_km?: number // Comentado - não será mais usado
 }
 
 interface Deliverer {
@@ -51,7 +50,7 @@ interface DelivererReport {
   totalDeliveries: number
   totalDeliveryFees: number
   totalOrderValue: number
-  totalKm: number
+  // totalKm: number // Comentado - não será mais usado
   deliveriesByType: Record<string, number>
   valuesByType: Record<string, number>
 }
@@ -69,9 +68,7 @@ export default function FechamentoPage() {
   const [deliverers, setDeliverers] = useState<Deliverer[]>([])
   const [selectedDeliverer, setSelectedDeliverer] = useState<string>("all")
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    // Data atual no fuso horário local
     const now = new Date()
-    // Ajuste para garantir que estamos usando a data local correta
     const offset = now.getTimezoneOffset()
     const localDate = new Date(now.getTime() - (offset * 60 * 1000))
     return localDate.toISOString().split('T')[0]
@@ -105,24 +102,15 @@ export default function FechamentoPage() {
   const fetchDeliveries = async () => {
     setLoading(true)
     try {
-      // Ajuste de fuso horário - considerando UTC-3 (Brasília)
       const selectedDateObj = new Date(selectedDate)
       const offset = selectedDateObj.getTimezoneOffset()
       const localDate = new Date(selectedDateObj.getTime() + (offset * 60 * 1000))
       
-      // Início do dia (00:00:00)
       const startDate = new Date(localDate)
       startDate.setHours(0, 0, 0, 0)
       
-      // Fim do dia (23:59:59)
       const endDate = new Date(localDate)
       endDate.setHours(23, 59, 59, 999)
-
-      console.log("Buscando entregas entre:", 
-        startDate.toLocaleString('pt-BR'), 
-        "e", 
-        endDate.toLocaleString('pt-BR')
-      )
 
       const { data, error } = await supabase
         .from("deliveries")
@@ -142,11 +130,9 @@ export default function FechamentoPage() {
         return
       }
 
-      // Ajustar datas para exibição
       const adjustedDeliveries = data?.map(delivery => {
-  const deliveryDate = new Date(delivery.created_at)
-  deliveryDate.setHours(deliveryDate.getHours()) // Ajuste para UTC-3
-
+        const deliveryDate = new Date(delivery.created_at)
+        deliveryDate.setMinutes(deliveryDate.getMinutes() - deliveryDate.getTimezoneOffset())
         return {
           ...delivery,
           created_at: deliveryDate.toISOString(),
@@ -157,7 +143,6 @@ export default function FechamentoPage() {
         }
       }) || []
 
-      console.log("Entregas encontradas:", adjustedDeliveries.length)
       setDeliveries(adjustedDeliveries)
     } catch (error) {
       console.error("Erro inesperado ao buscar entregas:", error)
@@ -167,17 +152,14 @@ export default function FechamentoPage() {
     }
   }
 
-  // Carregar entregadores
   useEffect(() => {
     fetchDeliverers()
   }, [toast])
 
-  // Carregar entregas do dia selecionado
   useEffect(() => {
     fetchDeliveries()
   }, [selectedDate, toast])
 
-  // Filtrar entregas por entregador
   const filteredDeliveries = useMemo(() => {
     return deliveries.filter((delivery) => {
       if (selectedDeliverer === "all") return true
@@ -185,7 +167,6 @@ export default function FechamentoPage() {
     })
   }, [deliveries, selectedDeliverer])
 
-  // Gerar relatório por entregador
   const generateReport = (): DelivererReport[] => {
     const reportMap = new Map<string, DelivererReport>()
 
@@ -197,7 +178,7 @@ export default function FechamentoPage() {
           totalDeliveries: 0,
           totalDeliveryFees: 0,
           totalOrderValue: 0,
-          totalKm: 0,
+          // totalKm: 0, // Comentado
           deliveriesByType: {},
           valuesByType: {},
         })
@@ -207,9 +188,8 @@ export default function FechamentoPage() {
       report.totalDeliveries++
       report.totalDeliveryFees += delivery.delivery_fee
       report.totalOrderValue += delivery.order_value
-      report.totalKm += delivery.round_trip_km || 0
+      // report.totalKm += delivery.round_trip_km || 0 // Comentado
 
-      // Contar por tipo
       if (!report.deliveriesByType[delivery.delivery_type]) {
         report.deliveriesByType[delivery.delivery_type] = 0
         report.valuesByType[delivery.delivery_type] = 0
@@ -223,11 +203,10 @@ export default function FechamentoPage() {
 
   const reports = generateReport()
 
-  // Estatísticas gerais
   const totalDeliveries = filteredDeliveries.length
   const totalDeliveryFees = filteredDeliveries.reduce((sum, d) => sum + d.delivery_fee, 0)
   const totalOrderValue = filteredDeliveries.reduce((sum, d) => sum + d.order_value, 0)
-  const totalKm = filteredDeliveries.reduce((sum, d) => sum + (d.round_trip_km || 0), 0)
+  // const totalKm = filteredDeliveries.reduce((sum, d) => sum + (d.round_trip_km || 0), 0) // Comentado
 
   const deleteDelivery = async (deliveryId: string) => {
     if (!confirm("Tem certeza que deseja remover esta entrega?")) return
@@ -262,7 +241,7 @@ export default function FechamentoPage() {
         totalDeliveries,
         totalDeliveryFees,
         totalOrderValue,
-        totalKm,
+        // totalKm, // Comentado
       },
       delivererReports: reports,
       deliveries: filteredDeliveries,
@@ -309,42 +288,47 @@ export default function FechamentoPage() {
     <AuthGuard allowedUserTypes={["restaurant"]}>
       <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-50 p-4">
         <div className="max-w-7xl mx-auto">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-4">
+          {/* Header - Ajustado para melhor responsividade */}
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+            <div className="flex flex-col md:flex-row md:items-center gap-4">
               <div className="flex gap-2">
                 <Link href="/dashboard">
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" className="w-full md:w-auto">
                     <ArrowLeft className="h-4 w-4 mr-2" />
                     Dashboard
                   </Button>
                 </Link>
-                <Button onClick={handleLogout} variant="outline" size="sm">
+                <Button onClick={handleLogout} variant="outline" size="sm" className="w-full md:w-auto">
                   <LogOut className="h-4 w-4 mr-2" />
                   Sair
                 </Button>
               </div>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+              <div className="text-center md:text-left">
+                <h1 className="text-2xl font-bold text-gray-900 flex items-center justify-center md:justify-start gap-2">
                   <FileText className="h-6 w-6" />
                   Relatório Diário
                 </h1>
                 <p className="text-gray-600">Data: {new Date(selectedDate).toLocaleDateString('pt-BR')}</p>
               </div>
             </div>
-            <div className="flex gap-2">
-              <Button onClick={handleRefresh} variant="outline" size="sm">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button onClick={handleRefresh} variant="outline" size="sm" className="w-full sm:w-auto">
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Atualizar
               </Button>
-              <Button onClick={exportReport} variant="outline" disabled={filteredDeliveries.length === 0}>
+              <Button 
+                onClick={exportReport} 
+                variant="outline" 
+                disabled={filteredDeliveries.length === 0}
+                className="w-full sm:w-auto"
+              >
                 <Download className="h-4 w-4 mr-2" />
                 Exportar
               </Button>
             </div>
           </div>
 
-          {/* Filtros */}
+          {/* Filtros - Ajustado para melhor responsividade */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Filtros</CardTitle>
@@ -354,7 +338,7 @@ export default function FechamentoPage() {
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Entregador</label>
                   <Select value={selectedDeliverer} onValueChange={setSelectedDeliverer}>
-                    <SelectTrigger>
+                    <SelectTrigger className="w-full">
                       <SelectValue placeholder="Todos os entregadores" />
                     </SelectTrigger>
                     <SelectContent>
@@ -380,8 +364,8 @@ export default function FechamentoPage() {
             </CardContent>
           </Card>
 
-          {/* Resumo Geral */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {/* Resumo Geral - Ajustado para 3 colunas em telas médias/grandes */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium">Total de Entregas</CardTitle>
@@ -419,21 +403,10 @@ export default function FechamentoPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Total Km Rodados</CardTitle>
-                <Navigation className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-orange-600">{totalKm.toFixed(1)} km</div>
-                <p className="text-xs text-muted-foreground">
-                  Média: {totalDeliveries > 0 ? (totalKm / totalDeliveries).toFixed(1) : "0,0"} km/entrega
-                </p>
-              </CardContent>
-            </Card>
+            {/* Card de KM removido */}
           </div>
 
-          {/* Relatório por Entregador */}
+          {/* Relatório por Entregador - Ajustado para melhor responsividade */}
           {reports.length > 0 && (
             <div className="space-y-6 mb-6">
               {reports.map((report) => (
@@ -445,7 +418,7 @@ export default function FechamentoPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                       <div>
                         <p className="text-sm text-muted-foreground">Entregas</p>
                         <p className="text-2xl font-bold">{report.totalDeliveries}</p>
@@ -458,10 +431,7 @@ export default function FechamentoPage() {
                         <p className="text-sm text-muted-foreground">Valor Total</p>
                         <p className="text-2xl font-bold text-blue-600">R$ {report.totalOrderValue.toFixed(2)}</p>
                       </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Km Rodados</p>
-                        <p className="text-2xl font-bold text-orange-600">{report.totalKm.toFixed(1)} km</p>
-                      </div>
+                      {/* KM removido */}
                     </div>
 
                     <Separator />
@@ -496,7 +466,7 @@ export default function FechamentoPage() {
             </div>
           )}
 
-          {/* Lista Detalhada de Entregas */}
+          {/* Lista Detalhada de Entregas - Ajustada para melhor responsividade */}
           {filteredDeliveries.length > 0 && (
             <Card>
               <CardHeader>
@@ -504,18 +474,18 @@ export default function FechamentoPage() {
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
-                  <Table>
+                  <Table className="min-w-full">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Hora</TableHead>
-                        <TableHead>Entregador</TableHead>
-                        <TableHead>Endereço</TableHead>
-                        <TableHead>Bairro</TableHead>
-                        <TableHead>Tipo</TableHead>
-                        <TableHead>Valor</TableHead>
-                        <TableHead>Taxa</TableHead>
-                        <TableHead>Km</TableHead>
-                        <TableHead></TableHead>
+                        <TableHead className="whitespace-nowrap">Hora</TableHead>
+                        <TableHead className="whitespace-nowrap">Entregador</TableHead>
+                        <TableHead className="min-w-[150px]">Endereço</TableHead>
+                        <TableHead className="whitespace-nowrap">Bairro</TableHead>
+                        <TableHead className="whitespace-nowrap">Tipo</TableHead>
+                        <TableHead className="whitespace-nowrap">Valor</TableHead>
+                        <TableHead className="whitespace-nowrap">Taxa</TableHead>
+                        {/* Coluna de KM removida */}
+                        <TableHead className="whitespace-nowrap"></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -523,29 +493,34 @@ export default function FechamentoPage() {
                         const deliveryDate = new Date(delivery.created_at)
                         return (
                           <TableRow key={delivery.id}>
-                            <TableCell>
+                            <TableCell className="whitespace-nowrap">
                               {deliveryDate.toLocaleTimeString("pt-BR", {
                                 hour: "2-digit",
                                 minute: "2-digit",
                               })}
                             </TableCell>
-                            <TableCell>{delivery.deliverer_name}</TableCell>
+                            <TableCell className="whitespace-nowrap">{delivery.deliverer_name}</TableCell>
                             <TableCell className="max-w-[200px] truncate" title={delivery.address}>
                               {delivery.address}
                             </TableCell>
-                            <TableCell>{delivery.neighborhood}</TableCell>
-                            <TableCell>
+                            <TableCell className="whitespace-nowrap">{delivery.neighborhood}</TableCell>
+                            <TableCell className="whitespace-nowrap">
                               <Badge variant="outline">
                                 {DELIVERY_TYPES[delivery.delivery_type] || delivery.delivery_type}
                               </Badge>
                             </TableCell>
-                            <TableCell>R$ {delivery.order_value.toFixed(2)}</TableCell>
-                            <TableCell className="text-green-600">R$ {delivery.delivery_fee.toFixed(2)}</TableCell>
-                            <TableCell className="text-orange-600">
-                              {delivery.round_trip_km ? `${delivery.round_trip_km.toFixed(1)} km` : "-"}
+                            <TableCell className="whitespace-nowrap">R$ {delivery.order_value.toFixed(2)}</TableCell>
+                            <TableCell className="text-green-600 whitespace-nowrap">
+                              R$ {delivery.delivery_fee.toFixed(2)}
                             </TableCell>
-                            <TableCell>
-                              <Button variant="ghost" size="sm" onClick={() => deleteDelivery(delivery.id)}>
+                            {/* Célula de KM removida */}
+                            <TableCell className="whitespace-nowrap">
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                onClick={() => deleteDelivery(delivery.id)}
+                                className="h-8 w-8 p-0"
+                              >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </TableCell>

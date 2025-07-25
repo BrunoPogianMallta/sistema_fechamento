@@ -37,7 +37,7 @@ interface Delivery {
   created_at: string
 }
 
-const DELIVERY_TYPES = [
+const DELIVERY_TYPE_OPTIONS = [
   { value: "ifood", label: "iFood" },
   { value: "app", label: "App Próprio" },
   { value: "card", label: "Cartão" },
@@ -45,6 +45,20 @@ const DELIVERY_TYPES = [
   { value: "pix", label: "PIX" },
   { value: "rappi", label: "RAPPI" },
 ]
+
+const DELIVERY_TYPES: Record<string, string> = {
+  ifood: "iFood",
+  app: "App Próprio",
+  card: "Cartão",
+  cash: "Dinheiro",
+  pix: "PIX",
+  rappi: "RAPPI",
+}
+
+interface Report {
+  deliveriesByType: Record<string, number>
+  valuesByType: Record<string, number>
+}
 
 export default function DelivererPage() {
   const params = useParams()
@@ -74,6 +88,28 @@ export default function DelivererPage() {
     }),
     { total: 0, totalFees: 0, totalValue: 0 }
   )
+
+  // Gera relatório por tipo de entrega
+  const generateReport = (): Report => {
+    const report: Report = {
+      deliveriesByType: {},
+      valuesByType: {}
+    }
+
+    deliveries.forEach(delivery => {
+      // Contagem por tipo
+      report.deliveriesByType[delivery.delivery_type] = 
+        (report.deliveriesByType[delivery.delivery_type] || 0) + 1
+      
+      // Valores por tipo
+      report.valuesByType[delivery.delivery_type] = 
+        (report.valuesByType[delivery.delivery_type] || 0) + delivery.order_value
+    })
+
+    return report
+  }
+
+  const report = generateReport()
 
   // Busca entregas do dia
   const fetchTodayDeliveries = useCallback(async () => {
@@ -381,6 +417,38 @@ export default function DelivererPage() {
             </Card>
           </div>
 
+          {/* Estatísticas por Tipo de Entrega */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <h4 className="font-semibold mb-3">Entregas por Tipo</h4>
+                    <div className="space-y-2">
+                      {Object.entries(report.deliveriesByType).map(([type, count]) => (
+                        <div key={type} className="flex justify-between items-center">
+                          <Badge variant="secondary">{DELIVERY_TYPES[type] || type}</Badge>
+                          <span className="font-semibold">{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold mb-3">Valores por Tipo</h4>
+                    <div className="space-y-2">
+                      {Object.entries(report.valuesByType).map(([type, value]) => (
+                        <div key={type} className="flex justify-between items-center">
+                          <span className="text-sm">{DELIVERY_TYPES[type] || type}</span>
+                          <span className="font-semibold">R$ {value.toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
           {/* Formulário e Lista */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Formulário */}
@@ -437,7 +505,7 @@ export default function DelivererPage() {
                         <SelectValue placeholder="Selecione o tipo" />
                       </SelectTrigger>
                       <SelectContent>
-                        {DELIVERY_TYPES.map((type) => (
+                        {DELIVERY_TYPE_OPTIONS.map((type) => (
                           <SelectItem key={type.value} value={type.value}>
                             {type.label}
                           </SelectItem>
@@ -533,7 +601,7 @@ export default function DelivererPage() {
                     </div>
                   ) : (
                     deliveries.map((delivery) => {
-                      const deliveryType = DELIVERY_TYPES.find((t) => t.value === delivery.delivery_type)
+                      const deliveryType = DELIVERY_TYPE_OPTIONS.find((t) => t.value === delivery.delivery_type)
                       const deliveryTime = new Date(delivery.created_at)
                       const now = new Date()
                       const hoursDiff = (now.getTime() - deliveryTime.getTime()) / (1000 * 60 * 60)
